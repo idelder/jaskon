@@ -25,7 +25,7 @@ def _ensure_logging_configured(verbose: bool) -> None:
     )
 
 
-def listen_and_generate(cfg: AppConfig) -> Path:
+def listen_and_generate(cfg: AppConfig, *, request_text_override: str | None = None) -> Path:
     _ensure_logging_configured(cfg.verbose)
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -43,18 +43,24 @@ def listen_and_generate(cfg: AppConfig) -> Path:
             logger.exception("Vosk model download failed")
             pass
 
-    listener = WakeWordListener(
-        vosk_model_path=str(cfg.vosk_model_dir),
-        sample_rate=cfg.sample_rate,
-        wake_phrase=cfg.wake_phrase,
-        device=cfg.device,
-        max_request_seconds=cfg.max_request_seconds,
-        log_transcript=cfg.verbose,
-    )
+    if request_text_override is None:
+        listener = WakeWordListener(
+            vosk_model_path=str(cfg.vosk_model_dir),
+            sample_rate=cfg.sample_rate,
+            wake_phrase=cfg.wake_phrase,
+            device=cfg.device,
+            max_request_seconds=cfg.max_request_seconds,
+            log_transcript=cfg.verbose,
+        )
 
-    logger.info("Listening for wake phrase: %r", cfg.wake_phrase)
-    wake = listener.listen_once()
-    logger.info("Heard request: %s", wake.request_text)
+        logger.info("Listening for wake phrase: %r", cfg.wake_phrase)
+        wake = listener.listen_once()
+        request_text = wake.request_text
+        logger.info("Heard request: %s", request_text)
+    else:
+        request_text = request_text_override.strip()
+        logger.info("Test run: skipping microphone. Using request: %s", request_text)
+
     now_local = datetime.now().astimezone().isoformat(timespec="seconds")
 
     search_results = []
@@ -63,19 +69,19 @@ def listen_and_generate(cfg: AppConfig) -> Path:
             query_res = generate_search_query(
                 api_key_env=cfg.openai_api_key_env,
                 model=cfg.web_search_query_model,
-                user_request=wake.request_text,
+                user_request=request_text,
                 now_local_iso=now_local,
                 default_location=cfg.default_location,
             )
             logger.info("Generated web search query: %s", query_res.query)
-            search_results = web_search(cfg, wake.request_text, query_override=query_res.query)
+            search_results = web_search(cfg, request_text, query_override=query_res.query)
         except Exception:
             logger.exception("Failed to generate/search web context; continuing without search")
 
     prompt_res = build_image_prompt(
         api_key_env=cfg.openai_api_key_env,
         model=cfg.prompt_model,
-        user_request=wake.request_text,
+        user_request=request_text,
         assets_dir=cfg.assets_dir,
         frame_width=cfg.image_width,
         frame_height=cfg.image_height,

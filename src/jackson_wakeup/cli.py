@@ -35,6 +35,16 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--text-input",
+        type=str,
+        default=None,
+        help=(
+            "Skip microphone and run a single request provided on the command line. "
+            "Example: --text-input \"what is the weather forecast today?\""
+        ),
+    )
+
+    parser.add_argument(
         "--no-image-edit",
         action="store_true",
         help="Disable the image edit endpoint (forces text-only image generation)",
@@ -71,7 +81,11 @@ def main() -> None:
         image_use_edit_endpoint=(not args.no_image_edit),
         image_edit_output_size_override=edit_override,
     )
-    listen_and_generate(cfg)
+
+    if args.text_input is not None:
+        listen_and_generate(cfg, request_text_override=args.text_input)
+    else:
+        listen_and_generate(cfg)
 
 
 if __name__ == "__main__":
