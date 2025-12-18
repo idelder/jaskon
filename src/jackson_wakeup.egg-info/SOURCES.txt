@@ -1,0 +1,15 @@
+README.md
+pyproject.toml
+src/jackson_wakeup/__init__.py
+src/jackson_wakeup/cli.py
+src/jackson_wakeup/config.py
+src/jackson_wakeup/openai_client.py
+src/jackson_wakeup/pipeline.py
+src/jackson_wakeup/stt.py
+src/jackson_wakeup/vosk_setup.py
+src/jackson_wakeup.egg-info/PKG-INFO
+src/jackson_wakeup.egg-info/SOURCES.txt
+src/jackson_wakeup.egg-info/dependency_links.txt
+src/jackson_wakeup.egg-info/entry_points.txt
+src/jackson_wakeup.egg-info/requires.txt
+src/jackson_wakeup.egg-info/top_level.txt

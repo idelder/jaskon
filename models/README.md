@@ -1,0 +1,1 @@
+Add your preferred vosk model here

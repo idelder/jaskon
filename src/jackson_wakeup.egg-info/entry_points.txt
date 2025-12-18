@@ -1,0 +1,2 @@
+[console_scripts]
+jackson-listen = jackson_wakeup.cli:main

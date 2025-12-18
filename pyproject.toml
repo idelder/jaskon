@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jackson-wakeup"
+version = "0.1.0"
+description = "Wake-word listener (hey jackson) that generates a frame-ready image via OpenAI"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "You" }]
+dependencies = [
+  "openai>=1.30.0",
+  "sounddevice>=0.4.6",
+  "numpy>=1.24",
+  "vosk>=0.3.45",
+  "Pillow>=10.0.0",
+  "requests>=2.31.0",
+]
+
+[project.scripts]
+jackson-listen = "jackson_wakeup.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

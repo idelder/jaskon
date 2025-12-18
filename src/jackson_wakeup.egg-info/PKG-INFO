@@ -1,0 +1,78 @@
+Metadata-Version: 2.4
+Name: jackson-wakeup
+Version: 0.1.0
+Summary: Wake-word listener (hey jackson) that generates a frame-ready image via OpenAI
+Author: You
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: openai>=1.30.0
+Requires-Dist: sounddevice>=0.4.6
+Requires-Dist: numpy>=1.24
+Requires-Dist: vosk>=0.3.45
+Requires-Dist: Pillow>=10.0.0
+Requires-Dist: requests>=2.31.0
+
+# jackson-wakeup
+
+Listens to your microphone for the wake phrase **"hey jackson"**. When heard, it:
+
+1) Uses OpenAI (ChatGPT) to generate an **image-generation prompt** for a **16:9** image that looks good on an **11\" digital photo frame**, based on whatever you say after the wake phrase.
+2) Uses OpenAI image generation to create the image and saves it to `output/latest.png`.
+
+The generated image is an **anthropomorphised cartoon** of your dog Jackson, using a **local reference photo** from `assets/`.
+
+## Setup
+
+### 1) Put a Jackson photo in assets/
+
+Copy at least one image into `assets/` (supported: `.jpg`, `.png`, `.webp`).
+
+Example:
+- `assets/jackson.jpg`
+
+### 2) Install Python deps
+
+From the project root:
+
+- `py -m pip install -e .`
+
+Note: on Windows, `pip` and `python` can point to the Microsoft Store alias. Using `py -m pip` ensures you install into the same Python that runs the app.
+
+### 3) Get a Vosk speech model
+
+This project uses Vosk for offline streaming speech-to-text.
+
+Download an English model and unzip it into:
+- `models/vosk-model/`
+
+For example, you can use a Vosk “small” English model zip from the Vosk project releases, unzip it, and rename the extracted folder to `vosk-model`.
+
+### 4) Set your OpenAI key
+
+Set an environment variable:
+- `OPENAI_API_KEY=...`
+
+### 5) Run
+
+- `jackson-listen`
+
+If the command isn't found, run it via:
+- `py -m jackson_wakeup.cli`
+
+Then say:
+- "hey jackson make him a wizard in a library"
+
+Output:
+- `output/latest.png`
+
+## Notes (Windows)
+
+- Microphone capture uses `sounddevice`, which depends on PortAudio.
+  - If `sounddevice` installation fails, install the Microsoft C++ Build Tools and try again.
+- If your mic isn’t the default device, pass `--device N`.
+
+## CLI options
+
+- `--wake "hey jackson"` (change wake phrase)
+- `--vosk-model path/to/model` (override model dir)
+- `--device 2` (choose input device index)

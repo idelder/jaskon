@@ -1,0 +1,5 @@
+assets/*
+output/*
+.vscode/
+models/
+src/jackson_wakeup/__pycache__/
