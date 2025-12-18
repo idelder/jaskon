@@ -231,6 +231,35 @@ def _encode_image_data_url(image_path: Path) -> str:
     return f"data:{mime};base64,{b64}"
 
 
+def _read_prompt_context_text(assets_dir: Path) -> str:
+    """Read optional extra prompt context from assets/PROMPT_CONTEXT.txt.
+
+    This is ONLY used for the prompt-writing model call (build_image_prompt).
+    It is intentionally NOT used for web search or the image generation call.
+    """
+
+    try:
+        p = assets_dir / "PROMPT_CONTEXT.txt"
+        if not p.exists() or not p.is_file():
+            return ""
+        text = p.read_text(encoding="utf-8", errors="replace").strip()
+        if not text:
+            return ""
+        # Avoid flooding the model if the user pastes a huge biography.
+        max_chars = 6000
+        if len(text) > max_chars:
+            logger.warning(
+                "PROMPT_CONTEXT.txt is %d chars; truncating to %d chars",
+                len(text),
+                max_chars,
+            )
+            text = text[:max_chars]
+        return text
+    except Exception:
+        logger.exception("Failed to read assets/PROMPT_CONTEXT.txt; ignoring")
+        return ""
+
+
 def build_image_prompt(
     *,
     api_key_env: str,
@@ -284,11 +313,21 @@ def build_image_prompt(
         if default_location:
             time_loc_block += f"- Default location: {default_location}\n"
 
+    extra_context_text = _read_prompt_context_text(assets_dir)
+    extra_context_block = ""
+    if extra_context_text:
+        extra_context_block = (
+            "\n\nAdditional prompt context (from assets/PROMPT_CONTEXT.txt):\n"
+            + extra_context_text
+            + "\n"
+        )
+
     user_text = (
         "Create ONE concise but vivid prompt for an image model.\n"
         f"User request: {user_request!r}\n\n"
         f"Target: {frame_width}x{frame_height} (16:9).\n"
         f"{time_loc_block}"
+        f"{extra_context_block}"
         "Constraints:\n"
         "- Subject: Jackson the dog, anthropomorphised and animated (upright posture / expressive face / friendly).\n"
         "- Keep Jackson's distinctive markings consistent with the reference photo.\n"
