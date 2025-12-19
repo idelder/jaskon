@@ -29,25 +29,25 @@ def _download_image(url: str) -> bytes:
 
 
 def _postprocess_to_frame(img_bytes: bytes, target_w: int, target_h: int) -> bytes:
-    """Resize to fit the target frame WITHOUT cropping.
+    """Resize to the target frame WITHOUT black bars.
 
-    This uses letterboxing (padding) if the source aspect ratio differs.
+    Uses a "fill" strategy (resize to cover + center-crop) so the result is
+    exactly target_w x target_h with no letterboxing.
     """
 
     with Image.open(io.BytesIO(img_bytes)) as im:
         im = im.convert("RGB")
 
-        # Fit inside the frame while preserving aspect ratio.
-        fitted = ImageOps.contain(im, (target_w, target_h), method=Image.Resampling.LANCZOS)
-
-        # Paste onto a background canvas (no cropping).
-        canvas = Image.new("RGB", (target_w, target_h), (0, 0, 0))
-        left = (target_w - fitted.size[0]) // 2
-        top = (target_h - fitted.size[1]) // 2
-        canvas.paste(fitted, (left, top))
+        # Fill the frame and crop overflow (no black bars).
+        fitted = ImageOps.fit(
+            im,
+            (target_w, target_h),
+            method=Image.Resampling.LANCZOS,
+            centering=(0.5, 0.5),
+        )
 
         out = io.BytesIO()
-        canvas.save(out, format="PNG", optimize=True)
+        fitted.save(out, format="PNG", optimize=True)
         return out.getvalue()
 
 
@@ -295,7 +295,7 @@ def build_image_prompt(
         "The image is an anthropomorphised, animated character of the dog Jackson, "
         "based on the provided reference photo. You may choose an animation style. " 
         "Respond to the user's request (which comes after the wake phrase). "
-        "The setting of the image should help respond to the user request and be tailored to any relevant context. I.e., "
+        "The setting of the image must reflect the user's request and be tailored to any relevant context. I.e., "
         "consider whether information is best conveyed with Jackson in an indoor or outdoor setting, "
         "performing a specific activity, in a particular place. Consider time of day, weather, and other environmental details. "
     )
@@ -525,7 +525,7 @@ def generate_image(
     # Post-process to a stable frame size without cropping.
     try:
         img_bytes = _postprocess_to_frame(raw_bytes, width, height)
-        logger.debug("Post-processed image (no crop) to %sx%s", width, height)
+        logger.debug("Post-processed image (fill + crop) to %sx%s", width, height)
     except Exception:
         logger.exception("Failed to post-process image; writing raw bytes")
         img_bytes = raw_bytes

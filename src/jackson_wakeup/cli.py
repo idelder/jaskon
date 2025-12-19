@@ -59,6 +59,34 @@ def main() -> None:
             "Set to 'none' to avoid overriding generation_size. (default: 1024x1024)"
         ),
     )
+
+    parser.add_argument(
+        "--no-frameo",
+        action="store_true",
+        help="Disable copying the generated image to a connected Frameo device",
+    )
+    parser.add_argument(
+        "--frameo-dir",
+        type=str,
+        default=None,
+        help=(
+            "Destination folder for Frameo sync. Prefer a filesystem path like 'E:\\DCIM'. "
+            "You may also pass a Windows Shell path like 'This PC\\Frame\\Internal storage\\DCIM' "
+            "(requires pywin32)."
+        ),
+    )
+    parser.add_argument(
+        "--frameo-label",
+        type=str,
+        default=AppConfig().frameo_device_label,
+        help="Windows volume label to auto-detect when --frameo-dir is not set (default: Frame)",
+    )
+    parser.add_argument(
+        "--frameo-filename",
+        type=str,
+        default=AppConfig().frameo_dest_filename,
+        help="Filename to overwrite on the frame (default: latest.png)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -80,6 +108,10 @@ def main() -> None:
         verbose=args.verbose,
         image_use_edit_endpoint=(not args.no_image_edit),
         image_edit_output_size_override=edit_override,
+        frameo_enabled=(not args.no_frameo),
+        frameo_dest_dir=args.frameo_dir,
+        frameo_device_label=args.frameo_label,
+        frameo_dest_filename=args.frameo_filename,
     )
 
     if args.text_input is not None:

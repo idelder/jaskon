@@ -30,8 +30,8 @@ class AppConfig:
     output_filename: str = "latest.png"
 
     # Image target for 16:9 photo frame
-    image_width: int = 1729
-    image_height: int = 1024
+    image_width: int = 1280
+    image_height: int = 800
 
     # OpenAI image size (must be supported by the image endpoint; output will be cropped/resized to image_width x image_height)
     # Supported values commonly include: "1024x1024", "1024x1536", "1536x1024", "auto"
@@ -60,3 +60,12 @@ class AppConfig:
 
     # Only used when web_search_provider == "bing"
     bing_search_endpoint: str | None = None
+
+    # Frameo sync (optional): copy the generated image onto a connected Frameo frame.
+    # NOTE: Windows "This PC\\Frame\\Internal storage\\DCIM" is often an MTP shell path and
+    # not directly writable as a normal filesystem path. Prefer setting frameo_dest_dir to a
+    # real drive path (e.g. "E:\\DCIM"). If unset, we try to auto-detect by volume label.
+    frameo_enabled: bool = True
+    frameo_dest_dir: str | None = "This PC\\Frame\\Internal storage\\DCIM"
+    frameo_device_label: str = "Frame"
+    frameo_dest_filename: str = "latest.png"
