@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 
 from .config import AppConfig
-from .pipeline import listen_and_generate
+from .pipeline import listen_and_generate, run_forever
 
 
 def main() -> None:
@@ -42,6 +42,18 @@ def main() -> None:
             "Skip microphone and run a single request provided on the command line. "
             "Example: --text-input \"what is the weather forecast today?\""
         ),
+    )
+
+    parser.add_argument(
+        "--weather-forecast",
+        action="store_true",
+        help="Run the daily 5am weather forecast request immediately (test mode).",
+    )
+
+    parser.add_argument(
+        "--run-forever",
+        action="store_true",
+        help="Run continuously: keep listening for wake phrase and also trigger a weather forecast every day at 5am local time.",
     )
 
     parser.add_argument(
@@ -114,10 +126,22 @@ def main() -> None:
         frameo_dest_filename=args.frameo_filename,
     )
 
+    if args.weather_forecast:
+        # Immediate test of the scheduled feature.
+        from .pipeline import _weather_forecast_request
+
+        listen_and_generate(cfg, request_text_override=_weather_forecast_request(cfg))
+        return
+
+    if args.run_forever:
+        run_forever(cfg)
+        return
+
     if args.text_input is not None:
         listen_and_generate(cfg, request_text_override=args.text_input)
-    else:
-        listen_and_generate(cfg)
+        return
+
+    listen_and_generate(cfg)
 
 
 if __name__ == "__main__":

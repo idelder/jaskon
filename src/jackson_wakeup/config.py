@@ -22,7 +22,7 @@ class AppConfig:
     # OpenAI
     openai_api_key_env: str = "OPENAI_API_KEY"
     prompt_model: str = "gpt-4o-mini"
-    image_model: str = "gpt-image-1-mini"
+    image_model: str = "dall-e-2"#"gpt-image-1-mini"
 
     # Output
     assets_dir: Path = Path("assets")

@@ -3,6 +3,11 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 from pathlib import Path
+import threading
+import time
+from datetime import timedelta
+import textwrap
+import tempfile
 
 from .config import AppConfig
 from .openai_client import build_image_prompt, generate_image, generate_search_query
@@ -10,6 +15,8 @@ from .stt import WakeWordListener
 from .vosk_setup import ensure_vosk_model
 from .web_search import web_search
 from uuid import uuid4
+
+from PIL import Image, ImageDraw, ImageFont
 
 from .frameo_sync import (
     copy_image_to_frameo,
@@ -23,6 +30,134 @@ from .frameo_sync import (
 logger = logging.getLogger(__name__)
 
 
+def _weather_forecast_request(cfg: AppConfig) -> str:
+    loc = (cfg.default_location or "").strip()
+    if loc:
+        return f"what is the weather forecast today in {loc}?"
+    return "what is the weather forecast today?"
+
+
+def _seconds_until_next_local_time(*, hour: int, minute: int) -> float:
+    now = datetime.now().astimezone()
+    nxt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if nxt <= now:
+        nxt = nxt + timedelta(days=1)
+    return max(0.0, (nxt - now).total_seconds())
+
+
+def _render_loading_with_request(*, loading_path: Path, request_text: str, out_path: Path) -> None:
+    """Render a loading image with the request text in the top-left.
+
+    Uses Pillow's default font to avoid introducing new font dependencies.
+    """
+
+    request_text = (request_text or "").strip()
+    if not request_text:
+        # If there's no request, just copy the original.
+        out_path.write_bytes(loading_path.read_bytes())
+        return
+
+    def _capitalize_first_word(s: str) -> str:
+        parts = s.split(None, 1)
+        if not parts:
+            return s
+        first = parts[0]
+        rest = parts[1] if len(parts) > 1 else ""
+        if first:
+            first = first[:1].upper() + first[1:]
+        return (first + (" " + rest if rest else "")).strip()
+
+    # Keep it short-ish; this is a status overlay.
+    max_chars = 160
+    if len(request_text) > max_chars:
+        request_text = request_text[: max_chars - 1].rstrip() + "…"
+
+    request_text = _capitalize_first_word(request_text)
+
+    with Image.open(loading_path) as im:
+        im = im.convert("RGBA")
+        draw = ImageDraw.Draw(im)
+
+        # Force a scalable font. The tiny/purple-looking text reports typically happen
+        # when we fall back to Pillow's bitmap default font.
+        # Size tuned per user feedback.
+        font_size = max(54, int(im.size[1] * 0.066))
+        font = None
+        # Try common locations in a best-effort order.
+        for candidate in (
+            "DejaVuSans.ttf",
+            "arial.ttf",
+            "Arial.ttf",
+        ):
+            try:
+                font = ImageFont.truetype(candidate, font_size)
+                break
+            except Exception:
+                font = None
+
+        if font is None:
+            # Last resort: still render (may be small), but keep color correct.
+            font = ImageFont.load_default()
+
+        # Place the request in a readable top-left box.
+        margin = max(14, int(im.size[0] * 0.025))
+        box_w = max(240, int(im.size[0] * 0.62 * 0.75))
+        box_h = max(120, int(im.size[1] * 0.30))
+
+        raw_text = request_text
+
+        def _text_width(s: str) -> int:
+            try:
+                bbox = draw.textbbox((0, 0), s, font=font)
+                return int(bbox[2] - bbox[0])
+            except Exception:
+                return len(s) * max(6, font_size // 2)
+
+        # Word-wrap into lines within box_w.
+        words = raw_text.split()
+        lines: list[str] = []
+        cur = ""
+        for w in words:
+            cand = (cur + " " + w).strip() if cur else w
+            if _text_width(cand) <= box_w:
+                cur = cand
+            else:
+                if cur:
+                    lines.append(cur)
+                cur = w
+        if cur:
+            lines.append(cur)
+
+        if not lines:
+            lines = textwrap.wrap(raw_text, width=55) or [raw_text]
+
+        # Trim lines to fit height.
+        try:
+            line_h = int(draw.textbbox((0, 0), "Ag", font=font)[3]) + int(font_size * 0.35)
+        except Exception:
+            line_h = int(font_size * 1.25)
+        max_lines = max(2, box_h // max(1, line_h))
+        if len(lines) > max_lines:
+            lines = lines[:max_lines]
+            # Ellipsize the last line to indicate truncation.
+            last = lines[-1]
+            if not last.endswith("…"):
+                # Remove characters until it fits with an ellipsis.
+                while last and _text_width(last + "…") > box_w:
+                    last = last[:-1]
+                lines[-1] = (last.rstrip() + "…") if last else "…"
+
+        text = "\n".join(lines)
+
+        # User request: white text only with no background.
+        spacing = int(font_size * 0.25)
+        x, y = margin, margin * 2
+        draw.multiline_text((x, y), text, font=font, fill=(255, 255, 255, 255), spacing=spacing)
+
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        im.convert("RGB").save(out_path, format="PNG", optimize=True)
+
+
 def _ensure_logging_configured(verbose: bool) -> None:
     root = logging.getLogger()
     if root.handlers:
@@ -34,10 +169,7 @@ def _ensure_logging_configured(verbose: bool) -> None:
     )
 
 
-def listen_and_generate(cfg: AppConfig, *, request_text_override: str | None = None) -> Path:
-    _ensure_logging_configured(cfg.verbose)
-    cfg.output_dir.mkdir(parents=True, exist_ok=True)
-
+def _ensure_vosk_ready(cfg: AppConfig) -> None:
     # Optional convenience: if the model folder doesn't exist, attempt download.
     # You can override with your own URL by calling ensure_vosk_model yourself.
     if not cfg.vosk_model_dir.exists():
@@ -52,23 +184,13 @@ def listen_and_generate(cfg: AppConfig, *, request_text_override: str | None = N
             logger.exception("Vosk model download failed")
             pass
 
-    if request_text_override is None:
-        listener = WakeWordListener(
-            vosk_model_path=str(cfg.vosk_model_dir),
-            sample_rate=cfg.sample_rate,
-            wake_phrase=cfg.wake_phrase,
-            device=cfg.device,
-            max_request_seconds=cfg.max_request_seconds,
-            log_transcript=cfg.verbose,
-        )
 
-        logger.info("Listening for wake phrase: %r", cfg.wake_phrase)
-        wake = listener.listen_once()
-        request_text = wake.request_text
-        logger.info("Heard request: %s", request_text)
-    else:
-        request_text = request_text_override.strip()
-        logger.info("Test run: skipping microphone. Using request: %s", request_text)
+def generate_from_request(cfg: AppConfig, *, request_text: str) -> Path:
+    request_text = (request_text or "").strip()
+    if not request_text:
+        raise ValueError("request_text is empty")
+
+    cfg.output_dir.mkdir(parents=True, exist_ok=True)
 
     # Show a loading screen on Frameo while the AI work runs.
     # This is best-effort and should never fail the main pipeline.
@@ -77,36 +199,44 @@ def listen_and_generate(cfg: AppConfig, *, request_text_override: str | None = N
             loading_path = cfg.assets_dir / "loading.png"
             if loading_path.exists() and loading_path.is_file():
                 ts = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
-                loading_name = f"loading_{ts}_{uuid4().hex[:8]}{loading_path.suffix or '.png'}"
+                loading_name = f"loading_{ts}_{uuid4().hex[:8]}.png"
 
-                dest_dir = resolve_frameo_destination_dir(
-                    explicit_dir=cfg.frameo_dest_dir,
-                    device_label=cfg.frameo_device_label,
-                )
-                if dest_dir is not None:
-                    purge_images_in_dir(dest_dir)
-                    copy_image_to_frameo(
-                        src_image=loading_path,
-                        dest_dir=dest_dir,
-                        dest_filename=loading_name,
+                with tempfile.TemporaryDirectory(prefix="jackson_loading_") as td:
+                    rendered = Path(td) / "loading_overlay.png"
+                    _render_loading_with_request(
+                        loading_path=loading_path,
+                        request_text=request_text,
+                        out_path=rendered,
                     )
-                    logger.info("Sent loading screen to Frameo")
-                else:
-                    shell_path = (cfg.frameo_dest_dir or "").strip()
-                    if shell_path.lower().startswith("this pc\\"):
-                        purge_images_in_shell_path(shell_path=shell_path)
-                        # MTP folders can take a moment to refresh after deletes.
-                        import time
 
-                        time.sleep(1.5)
-                        ok = copy_image_to_frameo_shell_path(
-                            src_image=loading_path,
-                            shell_path=shell_path,
+                    dest_dir = resolve_frameo_destination_dir(
+                        explicit_dir=cfg.frameo_dest_dir,
+                        device_label=cfg.frameo_device_label,
+                    )
+                    if dest_dir is not None:
+                        purge_images_in_dir(dest_dir)
+                        copy_image_to_frameo(
+                            src_image=rendered,
+                            dest_dir=dest_dir,
                             dest_filename=loading_name,
-                            timeout_seconds=30.0,
                         )
-                        if ok:
-                            logger.info("Sent loading screen to Frameo (MTP)")
+                        logger.info("Sent loading screen to Frameo")
+                    else:
+                        shell_path = (cfg.frameo_dest_dir or "").strip()
+                        if shell_path.lower().startswith("this pc\\"):
+                            purge_images_in_shell_path(shell_path=shell_path)
+                            # MTP folders can take a moment to refresh after deletes.
+                            import time
+
+                            time.sleep(1.5)
+                            ok = copy_image_to_frameo_shell_path(
+                                src_image=rendered,
+                                shell_path=shell_path,
+                                dest_filename=loading_name,
+                                timeout_seconds=30.0,
+                            )
+                            if ok:
+                                logger.info("Sent loading screen to Frameo (MTP)")
             else:
                 logger.debug("No loading screen found at: %s", loading_path)
         except Exception:
@@ -212,3 +342,85 @@ def listen_and_generate(cfg: AppConfig, *, request_text_override: str | None = N
             logger.exception("Failed to copy image to Frameo")
 
     return out_path
+
+
+def listen_and_generate(cfg: AppConfig, *, request_text_override: str | None = None) -> Path:
+    _ensure_logging_configured(cfg.verbose)
+    cfg.output_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_vosk_ready(cfg)
+
+    if request_text_override is None:
+        listener = WakeWordListener(
+            vosk_model_path=str(cfg.vosk_model_dir),
+            sample_rate=cfg.sample_rate,
+            wake_phrase=cfg.wake_phrase,
+            device=cfg.device,
+            max_request_seconds=cfg.max_request_seconds,
+            log_transcript=cfg.verbose,
+        )
+
+        logger.info("Listening for wake phrase: %r", cfg.wake_phrase)
+        wake = listener.listen_once()
+        request_text = wake.request_text
+        logger.info("Heard request: %s", request_text)
+    else:
+        request_text = request_text_override.strip()
+        logger.info("Test run: skipping microphone. Using request: %s", request_text)
+
+    return generate_from_request(cfg, request_text=request_text)
+
+
+def run_forever(cfg: AppConfig) -> None:
+    """Run continuously: listen for wake requests and also run a daily 5am forecast."""
+
+    _ensure_logging_configured(cfg.verbose)
+    cfg.output_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_vosk_ready(cfg)
+
+    generation_lock = threading.Lock()
+    stop_event = threading.Event()
+
+    def daily_weather_loop() -> None:
+        # Fire at 5:00am local time, once per day.
+        while not stop_event.is_set():
+            wait_s = _seconds_until_next_local_time(hour=5, minute=0)
+            logger.info("Next scheduled weather forecast in %.1f minutes", wait_s / 60.0)
+            # Sleep in chunks so Ctrl+C shuts down promptly.
+            end = time.time() + wait_s
+            while time.time() < end and not stop_event.is_set():
+                time.sleep(min(5.0, max(0.0, end - time.time())))
+
+            if stop_event.is_set():
+                break
+
+            try:
+                with generation_lock:
+                    logger.info("Running scheduled 5am weather forecast")
+                    generate_from_request(cfg, request_text=_weather_forecast_request(cfg))
+            except Exception:
+                logger.exception("Scheduled weather forecast failed")
+
+    t = threading.Thread(target=daily_weather_loop, name="daily-weather", daemon=True)
+    t.start()
+
+    listener = WakeWordListener(
+        vosk_model_path=str(cfg.vosk_model_dir),
+        sample_rate=cfg.sample_rate,
+        wake_phrase=cfg.wake_phrase,
+        device=cfg.device,
+        max_request_seconds=cfg.max_request_seconds,
+        log_transcript=cfg.verbose,
+    )
+
+    try:
+        while True:
+            logger.info("Listening for wake phrase: %r", cfg.wake_phrase)
+            wake = listener.listen_once()
+            request_text = wake.request_text
+            logger.info("Heard request: %s", request_text)
+            with generation_lock:
+                generate_from_request(cfg, request_text=request_text)
+    except KeyboardInterrupt:
+        logger.info("Shutting down...")
+    finally:
+        stop_event.set()

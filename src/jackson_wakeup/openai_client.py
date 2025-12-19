@@ -140,8 +140,9 @@ def generate_search_query(
     )
 
     user = (
-        "Turn the user's request into ONE effective web search query.\n"
+        "Turn the user's request to Jackson the dog into ONE effective web search query.\n"
         "The user's request comes from voice recognition and may require interpretation.\n"
+        "You should search for information on behalf of Jackson the dog.\n"
         "Rules:\n"
         "- Output JSON: {\"query\": string}\n"
         "- Keep it short (<= 12 words) but specific.\n"
