@@ -58,6 +58,13 @@ class AppConfig:
     # Optional: helps queries like "weather" or "sunset" be location-accurate.
     default_location: str | None = "Boston, MA"
 
+    # Best-effort auto-location lookup for default_location when it is "auto"/None.
+    # Prefers OS geolocation when available.
+    # NOTE: IP-based location is intentionally NOT used (it can be very inaccurate).
+    auto_default_location: bool = False
+    auto_location_timeout_seconds: float = 3.0
+    auto_location_prefer_os: bool = True
+
     # Only used when web_search_provider == "bing"
     bing_search_endpoint: str | None = None
 

@@ -272,6 +272,7 @@ def build_image_prompt(
     now_local_iso: str | None = None,
     default_location: str | None = None,
     search_results: list[SearchResult] | None = None,
+    facts_context: str | None = None,
 ) -> ImagePromptResult:
     api_key = os.getenv(api_key_env)
     if not api_key:
@@ -317,6 +318,12 @@ def build_image_prompt(
         if default_location:
             time_loc_block += f"- Default location: {default_location}\n"
 
+    facts_block = ""
+    if facts_context:
+        facts = str(facts_context).strip()
+        if facts:
+            facts_block = "\n\nTrusted facts (provided by the application):\n" + facts + "\n"
+
     extra_context_text = _read_prompt_context_text(assets_dir)
     extra_context_block = ""
     if extra_context_text:
@@ -332,6 +339,7 @@ def build_image_prompt(
         f"{user_request}\n\n"
         f"Target: {frame_width}x{frame_height} (16:9).\n"
         f"{time_loc_block}"
+        f"{facts_block}"
         f"{extra_context_block}"
         "- Subject: Jackson the dog, anthropomorphised and animated (upright posture / expressive face / friendly).\n"
         "- Keep Jackson's distinctive markings consistent with the reference photo.\n"

@@ -8,6 +8,7 @@ import time
 from datetime import timedelta
 import textwrap
 import tempfile
+import shutil
 
 from .config import AppConfig
 from .openai_client import build_image_prompt, generate_image, generate_search_query
@@ -17,6 +18,9 @@ from .web_search import web_search
 from uuid import uuid4
 
 from PIL import Image, ImageDraw, ImageFont
+
+from .location import resolve_default_location
+from .weather import build_weather_summary
 
 from .frameo_sync import (
     copy_image_to_frameo,
@@ -30,11 +34,129 @@ from .frameo_sync import (
 logger = logging.getLogger(__name__)
 
 
+_FRAMEO_BG_LOCK = threading.Lock()
+
+
+def _sync_frameo_final_image(*, cfg: AppConfig, src_image: Path) -> None:
+    """Purge + copy the final image to Frameo (best-effort)."""
+
+    try:
+        # Frameo caches by name; always use a unique filename.
+        base = Path(cfg.frameo_dest_filename)
+        prefix = base.stem or "jackson"
+        ext = base.suffix or src_image.suffix or ".png"
+        ts = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
+        unique_name = f"{prefix}_{ts}_{uuid4().hex[:8]}{ext}"
+
+        dest_dir = resolve_frameo_destination_dir(
+            explicit_dir=cfg.frameo_dest_dir,
+            device_label=cfg.frameo_device_label,
+        )
+        if dest_dir is not None:
+            deleted = purge_images_in_dir(dest_dir)
+            if deleted:
+                logger.info("Deleted %d image(s) from Frameo folder", deleted)
+            copied = copy_image_to_frameo(
+                src_image=src_image,
+                dest_dir=dest_dir,
+                dest_filename=unique_name,
+            )
+            logger.info("Copied image to Frameo: %s", copied)
+            return
+
+        shell_path = (cfg.frameo_dest_dir or "").strip()
+        if shell_path.lower().startswith("this pc\\"):
+            deleted = purge_images_in_shell_path(shell_path=shell_path)
+            if deleted:
+                logger.info("Deleted %d image(s) from Frameo (MTP) folder", deleted)
+            # MTP folders can take a moment to refresh after deletes.
+            time.sleep(1.5)
+            ok = copy_image_to_frameo_shell_path(
+                src_image=src_image,
+                shell_path=shell_path,
+                dest_filename=unique_name,
+            )
+            if ok:
+                logger.info("Copied image to Frameo via Windows Shell path: %s", shell_path)
+            else:
+                logger.warning(
+                    "Frameo sync enabled but could not copy via Windows Shell path. "
+                    "If this device supports a drive letter, prefer --frameo-dir 'E:\\DCIM'."
+                )
+            return
+
+        logger.warning(
+            "Frameo sync enabled but destination not found. "
+            "If Windows shows 'This PC\\Frame\\Internal storage\\DCIM', set --frameo-dir to that shell path (requires pywin32) "
+            "or use a drive-letter path like 'E:\\DCIM'."
+        )
+    except Exception:
+        logger.exception("Failed to copy image to Frameo")
+
+
+def _start_frameo_final_sync_async(*, cfg: AppConfig, src_image: Path) -> None:
+    """Start Frameo sync in the background.
+
+    Stages the image to a stable temp file so subsequent generations can't overwrite it.
+    """
+
+    try:
+        staged_dir = cfg.output_dir / ".frameo_staging"
+        staged_dir.mkdir(parents=True, exist_ok=True)
+        staged_path = staged_dir / f"staged_{datetime.now().astimezone().strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}{src_image.suffix or '.png'}"
+        shutil.copyfile(src_image, staged_path)
+    except Exception:
+        logger.exception("Failed to stage image for async Frameo sync; falling back to synchronous")
+        _sync_frameo_final_image(cfg=cfg, src_image=src_image)
+        return
+
+    def _worker() -> None:
+        try:
+            # Serialize Frameo operations to avoid purge/copy races.
+            with _FRAMEO_BG_LOCK:
+                _sync_frameo_final_image(cfg=cfg, src_image=staged_path)
+        finally:
+            try:
+                staged_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    threading.Thread(target=_worker, name="frameo-sync", daemon=True).start()
+
+
 def _weather_forecast_request(cfg: AppConfig) -> str:
-    loc = (cfg.default_location or "").strip()
+    loc_res = resolve_default_location(
+        configured_default=cfg.default_location,
+        auto_enabled=cfg.auto_default_location,
+        timeout_seconds=cfg.auto_location_timeout_seconds,
+        prefer_os=cfg.auto_location_prefer_os,
+    )
+    loc = (loc_res.location if loc_res else "").strip()
     if loc:
-        return f"what is the weather forecast today in {loc}?"
-    return "what is the weather forecast today?"
+        return (
+            f"Hey Jackson, make a nice infographic on today's weather forecast for {loc}, "
+            "including numbers and graphics for temperature, humidity, conditions, etc. "
+            "and stand outside so I can see the weather. Show me the day's weather, not "
+            "the current weather."
+        )
+    return (
+        "Make a nice infographic on today's weather forecast, "
+        "including numbers and graphics for temperature, humidity, conditions, etc. "
+        "and stand outside so I can see the weather. Show me the day's weather, not "
+        "the current weather."
+    )
+
+
+def _build_weather_facts(*, location: str) -> str | None:
+    ws = build_weather_summary(location=location)
+    if not ws:
+        return None
+    return (
+        f"Source: Open-Meteo\n"
+        f"Location: {ws.location}\n"
+        f"Date: {ws.as_of_date}\n"
+        f"{ws.summary_text}\n"
+    )
 
 
 def _seconds_until_next_local_time(*, hour: int, minute: int) -> float:
@@ -185,7 +307,7 @@ def _ensure_vosk_ready(cfg: AppConfig) -> None:
             pass
 
 
-def generate_from_request(cfg: AppConfig, *, request_text: str) -> Path:
+def generate_from_request(cfg: AppConfig, *, request_text: str, frameo_async: bool = False) -> Path:
     request_text = (request_text or "").strip()
     if not request_text:
         raise ValueError("request_text is empty")
@@ -244,15 +366,38 @@ def generate_from_request(cfg: AppConfig, *, request_text: str) -> Path:
 
     now_local = datetime.now().astimezone().isoformat(timespec="seconds")
 
+    loc_res = resolve_default_location(
+        configured_default=cfg.default_location,
+        auto_enabled=cfg.auto_default_location,
+        timeout_seconds=cfg.auto_location_timeout_seconds,
+        prefer_os=cfg.auto_location_prefer_os,
+    )
+    effective_default_location = loc_res.location if loc_res else None
+    if loc_res and loc_res.source != "config":
+        logger.info("Auto-detected default location: %s", loc_res.location)
+
+    # If this looks like our scheduled weather infographic request, prefer the free
+    # Open-Meteo API. If Open-Meteo is unavailable, fall back to web search.
+    weather_facts: str | None = None
+    is_weather_forecast = "weather forecast" in request_text.lower()
+    if is_weather_forecast:
+        if effective_default_location:
+            try:
+                weather_facts = _build_weather_facts(location=effective_default_location)
+            except Exception:
+                logger.debug("Failed building Open-Meteo weather facts", exc_info=True)
+        if not weather_facts:
+            logger.info("Weather forecast request detected, but Open-Meteo facts unavailable; falling back to web search")
+
     search_results = []
-    if cfg.enable_web_search:
+    if cfg.enable_web_search and (not weather_facts):
         try:
             query_res = generate_search_query(
                 api_key_env=cfg.openai_api_key_env,
                 model=cfg.web_search_query_model,
                 user_request=request_text,
                 now_local_iso=now_local,
-                default_location=cfg.default_location,
+                default_location=effective_default_location,
             )
             logger.info("Generated web search query: %s", query_res.query)
             search_results = web_search(cfg, request_text, query_override=query_res.query)
@@ -267,8 +412,9 @@ def generate_from_request(cfg: AppConfig, *, request_text: str) -> Path:
         frame_width=cfg.image_width,
         frame_height=cfg.image_height,
         now_local_iso=now_local,
-        default_location=cfg.default_location,
+        default_location=effective_default_location,
         search_results=search_results,
+        facts_context=weather_facts,
     )
 
     logger.info("Generated image prompt. Calling image model...")
@@ -289,57 +435,11 @@ def generate_from_request(cfg: AppConfig, *, request_text: str) -> Path:
     logger.info("Saved image to: %s", out_path)
 
     if cfg.frameo_enabled:
-        try:
-            # Frameo caches by name; always use a unique filename.
-            base = Path(cfg.frameo_dest_filename)
-            prefix = base.stem or "jackson"
-            ext = base.suffix or out_path.suffix or ".png"
-            ts = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
-            unique_name = f"{prefix}_{ts}_{uuid4().hex[:8]}{ext}"
-
-            dest_dir = resolve_frameo_destination_dir(
-                explicit_dir=cfg.frameo_dest_dir,
-                device_label=cfg.frameo_device_label,
-            )
-            if dest_dir is not None:
-                deleted = purge_images_in_dir(dest_dir)
-                if deleted:
-                    logger.info("Deleted %d image(s) from Frameo folder", deleted)
-                copied = copy_image_to_frameo(
-                    src_image=out_path,
-                    dest_dir=dest_dir,
-                    dest_filename=unique_name,
-                )
-                logger.info("Copied image to Frameo: %s", copied)
-            else:
-                shell_path = (cfg.frameo_dest_dir or "").strip()
-                if shell_path.lower().startswith("this pc\\"):
-                    deleted = purge_images_in_shell_path(shell_path=shell_path)
-                    if deleted:
-                        logger.info("Deleted %d image(s) from Frameo (MTP) folder", deleted)
-                    # MTP folders can take a moment to refresh after deletes.
-                    import time
-                    time.sleep(1.5)
-                    ok = copy_image_to_frameo_shell_path(
-                        src_image=out_path,
-                        shell_path=shell_path,
-                        dest_filename=unique_name,
-                    )
-                    if ok:
-                        logger.info("Copied image to Frameo via Windows Shell path: %s", shell_path)
-                    else:
-                        logger.warning(
-                            "Frameo sync enabled but could not copy via Windows Shell path. "
-                            "If this device supports a drive letter, prefer --frameo-dir 'E:\\DCIM'."
-                        )
-                else:
-                    logger.warning(
-                        "Frameo sync enabled but destination not found. "
-                        "If Windows shows 'This PC\\Frame\\Internal storage\\DCIM', set --frameo-dir to that shell path (requires pywin32) "
-                        "or use a drive-letter path like 'E:\\DCIM'."
-                    )
-        except Exception:
-            logger.exception("Failed to copy image to Frameo")
+        if frameo_async:
+            logger.info("Starting async Frameo sync")
+            _start_frameo_final_sync_async(cfg=cfg, src_image=out_path)
+        else:
+            _sync_frameo_final_image(cfg=cfg, src_image=out_path)
 
     return out_path
 
@@ -367,7 +467,7 @@ def listen_and_generate(cfg: AppConfig, *, request_text_override: str | None = N
         request_text = request_text_override.strip()
         logger.info("Test run: skipping microphone. Using request: %s", request_text)
 
-    return generate_from_request(cfg, request_text=request_text)
+    return generate_from_request(cfg, request_text=request_text, frameo_async=False)
 
 
 def run_forever(cfg: AppConfig) -> None:
@@ -396,7 +496,7 @@ def run_forever(cfg: AppConfig) -> None:
             try:
                 with generation_lock:
                     logger.info("Running scheduled 5am weather forecast")
-                    generate_from_request(cfg, request_text=_weather_forecast_request(cfg))
+                    generate_from_request(cfg, request_text=_weather_forecast_request(cfg), frameo_async=True)
             except Exception:
                 logger.exception("Scheduled weather forecast failed")
 
@@ -419,7 +519,7 @@ def run_forever(cfg: AppConfig) -> None:
             request_text = wake.request_text
             logger.info("Heard request: %s", request_text)
             with generation_lock:
-                generate_from_request(cfg, request_text=request_text)
+                generate_from_request(cfg, request_text=request_text, frameo_async=True)
     except KeyboardInterrupt:
         logger.info("Shutting down...")
     finally:
