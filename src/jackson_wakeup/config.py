@@ -21,7 +21,7 @@ class AppConfig:
 
     # OpenAI
     openai_api_key_env: str = "OPENAI_API_KEY"
-    prompt_model: str = "gpt-4o-mini"
+    prompt_model: str = "gpt-5-mini"
     image_model: str = "gpt-image-1-mini"
 
     # Output
