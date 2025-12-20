@@ -1,7 +1,24 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
 from pathlib import Path
+
+
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
+def _default_frameo_enabled() -> bool:
+    # Frameo-on-Windows can use either a drive letter or MTP shell path.
+    # On Linux (including Raspberry Pi), leave this off by default; users can
+    # enable it by passing --frameo-dir to a mounted path.
+    return _is_windows()
+
+
+def _default_frameo_dest_dir() -> str | None:
+    # Default to the Windows MTP shell path only on Windows.
+    return "This PC\\Frame\\Internal storage\\DCIM" if _is_windows() else None
 
 
 @dataclass(frozen=True)
@@ -72,7 +89,7 @@ class AppConfig:
     # NOTE: Windows "This PC\\Frame\\Internal storage\\DCIM" is often an MTP shell path and
     # not directly writable as a normal filesystem path. Prefer setting frameo_dest_dir to a
     # real drive path (e.g. "E:\\DCIM"). If unset, we try to auto-detect by volume label.
-    frameo_enabled: bool = True
-    frameo_dest_dir: str | None = "This PC\\Frame\\Internal storage\\DCIM"
+    frameo_enabled: bool = field(default_factory=_default_frameo_enabled)
+    frameo_dest_dir: str | None = field(default_factory=_default_frameo_dest_dir)
     frameo_device_label: str = "Frame"
     frameo_dest_filename: str = "latest.png"

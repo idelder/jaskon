@@ -9,6 +9,112 @@ The generated image is an **anthropomorphised cartoon** of your dog Jackson, usi
 
 ## Setup
 
+## Raspberry Pi (recommended)
+
+This project runs well on a Raspberry Pi when you install the system audio libraries for `sounddevice`/PortAudio and run it as a `systemd` service.
+
+### 0) Install OS + enable SSH
+
+- OS: **Raspberry Pi OS Lite 64-bit (Bookworm)** is a good default.
+- Use Raspberry Pi Imager → choose your OS → **enable SSH** in the Imager settings.
+- Boot the Pi, then connect:
+  - On your LAN: `ssh pi@raspberrypi.local` (or use the Pi’s IP)
+
+### 1) Install system packages
+
+On the Pi:
+
+- `sudo apt update`
+- `sudo apt install -y git python3 python3-venv python3-pip portaudio19-dev libasound2-dev libjpeg-dev zlib1g-dev`
+
+### 2) Install this project
+
+Clone and install in a venv:
+
+- `git clone <your repo url> jackson`
+- `cd jackson`
+- `python3 -m venv .venv`
+- `source .venv/bin/activate`
+- `python -m pip install -U pip`
+- `python -m pip install -e .`
+
+### 3) Add a Jackson photo + (optional) loading screen
+
+- Put at least one photo in `assets/` (e.g. `assets/jackson.jpg`).
+- Optional: `assets/loading.png` is displayed immediately on the frame while generation runs.
+
+### 4) Vosk model
+
+The app can attempt to download a Vosk model on first run. If you prefer manual setup, unzip an English model into:
+
+- `models/vosk-model/`
+
+### 5) Set environment variables
+
+For interactive testing:
+
+- `export OPENAI_API_KEY="..."`
+
+Optional (web search fallback):
+
+- `export WEB_SEARCH_API_KEY="..."`
+
+### 6) Test run
+
+- `python -m jackson_wakeup.cli --text-input "make jackson a wizard" --no-frameo`
+
+To run continuously (wake listening + daily 5am weather):
+
+- `python -m jackson_wakeup.cli --run-forever`
+
+### Frameo sync (Pi/Linux)
+
+On Raspberry Pi/Linux, Frameo sync works by copying into a **mounted filesystem path** (not the Windows MTP “This PC\...” shell path).
+
+- Plug the frame into the Pi and see what it mounts as:
+  - `lsblk`
+  - `findmnt | grep -i media`
+- Identify the photo folder (commonly a `DCIM/` directory).
+- Test a manual run:
+  - `python -m jackson_wakeup.cli --text-input "make jackson a wizard" --frameo-dir /media/pi/FRAMEO/DCIM`
+
+For the startup service, set `FRAMEO_DIR` in `/etc/jackson-wakeup.env` to that mounted `DCIM` folder.
+
+### Microphone notes (Pi)
+
+- Check devices: `python -c "import sounddevice as sd; print(sd.query_devices())"`
+- If needed, pick an input device index: `--device N`
+
+### Remote access (optional): Tailscale
+
+Tailscale makes it easy to SSH into the Pi from anywhere without opening router ports.
+
+- Install: `curl -fsSL https://tailscale.com/install.sh | sh`
+- Authenticate + enable Tailscale SSH: `sudo tailscale up --ssh`
+- Then SSH from your laptop: `ssh pi@<pi-hostname>` (over your tailnet)
+
+### Run on startup (systemd)
+
+1) Create an env file:
+
+- `sudo cp scripts/jackson-wakeup.env.example /etc/jackson-wakeup.env`
+- `sudo nano /etc/jackson-wakeup.env`  (set `OPENAI_API_KEY=...` and `FRAMEO_DIR=...`)
+
+2) Install the service:
+
+- `sudo cp scripts/jackson-wakeup.service /etc/systemd/system/jackson-wakeup.service`
+- Edit paths inside the unit if your repo isn’t at `/home/pi/jackson`.
+
+3) Enable + start:
+
+- `sudo systemctl daemon-reload`
+- `sudo systemctl enable jackson-wakeup`
+- `sudo systemctl start jackson-wakeup`
+
+4) Logs:
+
+- `journalctl -u jackson-wakeup -f`
+
 ### Directory expectations
 
 At runtime the project expects these directories (created automatically where possible):

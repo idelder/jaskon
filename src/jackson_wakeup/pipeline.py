@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -85,11 +86,17 @@ def _sync_frameo_final_image(*, cfg: AppConfig, src_image: Path) -> None:
                 )
             return
 
-        logger.warning(
-            "Frameo sync enabled but destination not found. "
-            "If Windows shows 'This PC\\Frame\\Internal storage\\DCIM', set --frameo-dir to that shell path (requires pywin32) "
-            "or use a drive-letter path like 'E:\\DCIM'."
-        )
+        if os.name == "nt":
+            logger.warning(
+                "Frameo sync enabled but destination not found. "
+                "If Windows shows 'This PC\\Frame\\Internal storage\\DCIM', set --frameo-dir to that shell path (requires pywin32) "
+                "or use a drive-letter path like 'E:\\DCIM'."
+            )
+        else:
+            logger.warning(
+                "Frameo sync enabled but destination not found. "
+                "On Linux/Raspberry Pi, mount the frame storage and set --frameo-dir to a real path like '/media/pi/FRAMEO/DCIM'."
+            )
     except Exception:
         logger.exception("Failed to copy image to Frameo")
 

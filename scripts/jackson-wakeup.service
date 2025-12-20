@@ -1,0 +1,22 @@
+[Unit]
+Description=Jackson Wake Word Assistant
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/jackson
+EnvironmentFile=/etc/jackson-wakeup.env
+ExecStart=/home/pi/jackson/.venv/bin/python -m jackson_wakeup.cli --run-forever --frameo-dir ${FRAMEO_DIR}
+Restart=on-failure
+RestartSec=5
+
+# Hardening (safe defaults)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
