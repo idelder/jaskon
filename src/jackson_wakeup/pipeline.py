@@ -532,6 +532,16 @@ def run_forever(cfg: AppConfig) -> None:
             return True
         return str(getattr(t, "__module__", "")).startswith("sounddevice")
 
+    def _make_listener() -> WakeWordListener:
+        return WakeWordListener(
+            vosk_model_path=str(cfg.vosk_model_dir),
+            sample_rate=cfg.sample_rate,
+            wake_phrase=cfg.wake_phrase,
+            device=cfg.device,
+            max_request_seconds=cfg.max_request_seconds,
+            log_transcript=cfg.verbose,
+        )
+
     def daily_weather_loop() -> None:
         # Fire at 5:00am local time, once per day.
         while not stop_event.is_set():
@@ -556,14 +566,7 @@ def run_forever(cfg: AppConfig) -> None:
     t.start()
 
     try:
-        listener = WakeWordListener(
-            vosk_model_path=str(cfg.vosk_model_dir),
-            sample_rate=cfg.sample_rate,
-            wake_phrase=cfg.wake_phrase,
-            device=cfg.device,
-            max_request_seconds=cfg.max_request_seconds,
-            log_transcript=cfg.verbose,
-        )
+        listener = _make_listener()
 
         while True:
             try:
@@ -579,9 +582,22 @@ def run_forever(cfg: AppConfig) -> None:
                         "Microphone/PortAudio unavailable (%s). Continuing in weather-only mode.",
                         str(exc).strip() or type(exc).__name__,
                     )
-                    # Keep the daily weather thread alive; just stop listening.
-                    while True:
-                        time.sleep(3600)
+                    # Keep the daily weather thread alive; periodically retry the mic.
+                    retry_s = 30.0
+                    while not stop_event.is_set():
+                        time.sleep(retry_s)
+                        try:
+                            listener = _make_listener()
+                            logger.info("Microphone appears available again; resuming wake listening")
+                            break
+                        except Exception as retry_exc:
+                            if _is_portaudio_error(retry_exc):
+                                logger.info("Mic still unavailable; will retry in %.0fs", retry_s)
+                                continue
+                            raise
+                    if stop_event.is_set():
+                        raise KeyboardInterrupt
+                    continue
                 raise
     except KeyboardInterrupt:
         logger.info("Shutting down...")
