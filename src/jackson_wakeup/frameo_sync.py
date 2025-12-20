@@ -5,9 +5,11 @@ import logging
 import os
 import shutil
 import string
+import subprocess
 import tempfile
 import time
 from pathlib import Path
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,172 @@ def _com_pump() -> None:
 
 def _is_windows() -> bool:
     return os.name == "nt"
+
+
+def _is_gphoto2_path(path: str | None) -> bool:
+    return bool(path) and str(path).strip().lower().startswith("gphoto2:")
+
+
+def _gphoto2_remote_folder(path: str) -> str:
+    # "gphoto2:/store_00010001/DCIM" -> "/store_00010001/DCIM"
+    return str(path).split(":", 1)[1].strip()
+
+
+def _have_gphoto2() -> bool:
+    return shutil.which("gphoto2") is not None
+
+
+def _run_gphoto2(args: list[str], *, timeout_seconds: float) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        args,
+        capture_output=True,
+        text=True,
+        timeout=timeout_seconds,
+    )
+
+
+_USB_PORT_RE = re.compile(r"\busb:\d{1,3},\d{1,3}\b")
+_BASEDIR_RE = re.compile(r"\bbasedir\s*=\s*(/[^\s]+)")
+
+
+def _detect_gphoto2_usb_port(*, timeout_seconds: float = 30.0) -> str | None:
+    """Return a concrete gphoto2 USB port like 'usb:001,005'.
+
+    Using '--port usb:' can lead to libgphoto2 selecting an invalid 0x0/0x0 device.
+    Auto-detect provides the concrete port when the device is visible.
+    """
+
+    if not _have_gphoto2():
+        return None
+    try:
+        p = _run_gphoto2(["gphoto2", "--auto-detect"], timeout_seconds=timeout_seconds)
+        text = (p.stdout or "") + "\n" + (p.stderr or "")
+        m = _USB_PORT_RE.search(text)
+        if m:
+            return m.group(0)
+    except Exception:
+        logger.debug("gphoto2 --auto-detect failed", exc_info=True)
+    return None
+
+
+def _detect_gphoto2_basedir(*, timeout_seconds: float = 30.0) -> str | None:
+    """Return a gphoto2 storage base directory like '/store_00010001'.
+
+    Some Frameo devices expose writable PTP storage rooted at a store path.
+    We parse this from `gphoto2 --storage-info`.
+    """
+
+    if not _have_gphoto2():
+        return None
+
+    try:
+        port = _detect_gphoto2_usb_port(timeout_seconds=min(30.0, timeout_seconds)) or "usb:"
+        p = _run_gphoto2(["gphoto2", "--port", port, "--storage-info"], timeout_seconds=timeout_seconds)
+        text = (p.stdout or "") + "\n" + (p.stderr or "")
+        m = _BASEDIR_RE.search(text)
+        if m:
+            return m.group(1).strip()
+    except Exception:
+        logger.debug("gphoto2 --storage-info failed", exc_info=True)
+
+    return None
+
+
+def _resolve_gphoto2_remote_folder(*, gphoto2_path: str, timeout_seconds: float) -> str | None:
+    """Resolve a remote folder suitable for gphoto2 operations.
+
+    Supported formats:
+    - gphoto2:/store_00010001/DCIM   (explicit)
+    - gphoto2:auto                  (auto-detect basedir + '/DCIM')
+    - gphoto2:                      (auto-detect basedir + '/DCIM')
+    """
+
+    remote = _gphoto2_remote_folder(gphoto2_path)
+    remote_norm = remote.strip()
+    if remote_norm and remote_norm.lower() != "auto":
+        return remote_norm
+
+    basedir = _detect_gphoto2_basedir(timeout_seconds=min(30.0, timeout_seconds))
+    if not basedir:
+        return None
+    # Most frames store photos under DCIM.
+    return f"{basedir.rstrip('/')}/DCIM"
+
+
+def purge_images_in_gphoto2_folder(*, gphoto2_path: str, timeout_seconds: float = 120.0) -> bool:
+    """Delete all files in a remote gphoto2 folder.
+
+    gphoto2_path format: "gphoto2:/store_00010001/DCIM"
+    """
+
+    if not _is_gphoto2_path(gphoto2_path):
+        return False
+    if not _have_gphoto2():
+        logger.warning("gphoto2 is not installed; cannot purge Frameo via PTP")
+        return False
+
+    remote = _resolve_gphoto2_remote_folder(gphoto2_path=gphoto2_path, timeout_seconds=timeout_seconds)
+    if not remote:
+        return False
+
+    try:
+        port = _detect_gphoto2_usb_port(timeout_seconds=min(30.0, timeout_seconds)) or "usb:"
+        p = _run_gphoto2(
+            ["gphoto2", "--port", port, "--folder", remote, "--delete-all-files"],
+            timeout_seconds=timeout_seconds,
+        )
+        if p.returncode != 0:
+            logger.warning("gphoto2 delete-all-files failed: %s", (p.stderr or p.stdout).strip())
+            return False
+        return True
+    except Exception:
+        logger.debug("gphoto2 delete-all-files failed", exc_info=True)
+        return False
+
+
+def copy_image_to_frameo_gphoto2(
+    *,
+    src_image: Path,
+    gphoto2_path: str,
+    dest_filename: str,
+    timeout_seconds: float = 120.0,
+) -> bool:
+    """Upload an image to a remote gphoto2 folder.
+
+    gphoto2_path format: "gphoto2:/store_00010001/DCIM"
+
+    Note: gphoto2 uses the local filename when uploading, so we stage to a temp
+    file with the desired dest_filename.
+    """
+
+    if not _is_gphoto2_path(gphoto2_path):
+        return False
+    if not _have_gphoto2():
+        logger.warning("gphoto2 is not installed; cannot copy image to Frameo via PTP")
+        return False
+    if not src_image.exists():
+        raise FileNotFoundError(f"Source image does not exist: {src_image}")
+
+    remote = _resolve_gphoto2_remote_folder(gphoto2_path=gphoto2_path, timeout_seconds=timeout_seconds)
+    if not remote:
+        return False
+
+    try:
+        port = _detect_gphoto2_usb_port(timeout_seconds=min(30.0, timeout_seconds)) or "usb:"
+        with tempfile.TemporaryDirectory(prefix="frameo_gphoto2_") as td:
+            staged = Path(td) / dest_filename
+            shutil.copyfile(src_image, staged)
+            p = _run_gphoto2(
+                ["gphoto2", "--port", port, "--folder", remote, "--upload-file", str(staged)],
+                timeout_seconds=timeout_seconds,
+            )
+            if p.returncode != 0:
+                logger.warning("gphoto2 upload-file failed: %s", (p.stderr or p.stdout).strip())
+                return False
+            return True
+    except Exception:
+        logger.debug("gphoto2 upload-file failed", exc_info=True)
+        return False
 
 
 def _get_volume_label_windows(root: str) -> str | None:
@@ -97,6 +265,10 @@ def resolve_frameo_destination_dir(*, explicit_dir: str | None, device_label: st
     """
 
     if explicit_dir:
+        # Special case: Raspberry Pi/Linux PTP sync via gphoto2.
+        if _is_gphoto2_path(explicit_dir):
+            return None
+
         # If this is a Windows Shell / MTP path like "This PC\\Frame\\Internal storage\\DCIM",
         # it won't exist as a normal filesystem path. We'll handle that separately.
         if explicit_dir.strip().lower().startswith("this pc\\"):

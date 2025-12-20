@@ -69,16 +69,70 @@ To run continuously (wake listening + daily 5am weather):
 
 ### Frameo sync (Pi/Linux)
 
-On Raspberry Pi/Linux, Frameo sync works by copying into a **mounted filesystem path** (not the Windows MTP “This PC\...” shell path).
+Many Frameo devices expose **PTP/MTP-style USB** (not USB Mass Storage). In that case they:
 
-- Plug the frame into the Pi and see what it mounts as:
-  - `lsblk`
-  - `findmnt | grep -i media`
-- Identify the photo folder (commonly a `DCIM/` directory).
-- Test a manual run:
-  - `python -m jackson_wakeup.cli --text-input "make jackson a wizard" --frameo-dir /media/pi/FRAMEO/DCIM`
+- show up in `lsusb`
+- do NOT show up in `lsblk`
+- are not automatically mountable under `/media/...`
 
-For the startup service, set `FRAMEO_DIR` in `/etc/jackson-wakeup.env` to that mounted `DCIM` folder.
+#### Diagnose USB mode
+
+- `lsusb | grep -i -E 'frame|harmony|2207'`
+- Check interface classes (example ID shown; adjust if needed):
+  - `sudo lsusb -d 2207:0012 -v 2>/dev/null | sed -n '/Interface Descriptor/,+20p' | egrep -i "bInterfaceClass|bInterfaceSubClass|bInterfaceProtocol|MTP|PTP"`
+
+If you see `Imaging` / `PTP`, use the `gphoto2` method below.
+
+#### Recommended: sync via gphoto2 (PTP)
+
+Install tools:
+
+- `sudo apt update`
+- `sudo apt install -y gphoto2`
+
+Verify detection:
+
+- `gphoto2 --auto-detect`
+
+If `gphoto2 --auto-detect` shows nothing, try:
+
+- `sudo gphoto2 --auto-detect`
+
+If it works with `sudo` but not without, you likely need USB permissions (udev rule). A simple option:
+
+- `sudo cp scripts/99-frameo.rules /etc/udev/rules.d/99-frameo.rules`
+- `sudo udevadm control --reload-rules`
+- unplug/replug the frame
+
+Find the storage + folders:
+
+- First capture the concrete port (example: `usb:001,005`):
+  - `gphoto2 --auto-detect`
+- Then use that port for folder discovery:
+  - `gphoto2 --port usb:001,005 --storage-info`
+  - `gphoto2 --port usb:001,005 --list-folders`
+
+If you see: `The supplied vendor or product id (0x0,0x0) is not valid`, it usually means gphoto2 did not successfully detect a camera/device. Re-run the steps above (especially `--auto-detect`, try `sudo`, and check USB disconnects in `dmesg`).
+
+Pick the folder that corresponds to DCIM (often something like `/store_00010001/DCIM`).
+
+Recommended (no hard-coded store path):
+
+- `python -m jackson_wakeup.cli --text-input "make jackson a wizard" --frameo-dir "gphoto2:auto"`
+
+Or explicitly:
+
+- `python -m jackson_wakeup.cli --text-input "make jackson a wizard" --frameo-dir "gphoto2:/store_00010001/DCIM"`
+
+For the startup service, set `FRAMEO_DIR` in `/etc/jackson-wakeup.env` to `gphoto2:auto` (or the explicit `gphoto2:/...` value).
+
+#### Troubleshooting: USB disconnect/reconnect loops
+
+If `dmesg` shows repeated USB disconnect/reconnect:
+
+- Try a different USB cable (many are power-only or unreliable for data).
+- Use a powered USB hub.
+- Consider disabling USB autosuspend (Pi OS): add `usbcore.autosuspend=-1` to `/boot/firmware/cmdline.txt` and reboot.
 
 ### Microphone notes (Pi)
 

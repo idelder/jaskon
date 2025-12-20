@@ -25,7 +25,9 @@ from .weather import build_weather_summary
 
 from .frameo_sync import (
     copy_image_to_frameo,
+    copy_image_to_frameo_gphoto2,
     copy_image_to_frameo_shell_path,
+    purge_images_in_gphoto2_folder,
     purge_images_in_dir,
     purge_images_in_shell_path,
     resolve_frameo_destination_dir,
@@ -48,6 +50,21 @@ def _sync_frameo_final_image(*, cfg: AppConfig, src_image: Path) -> None:
         ext = base.suffix or src_image.suffix or ".png"
         ts = datetime.now().astimezone().strftime("%Y%m%d_%H%M%S")
         unique_name = f"{prefix}_{ts}_{uuid4().hex[:8]}{ext}"
+
+        # Raspberry Pi/Linux: Frameo often exposes PTP/MTP (not mountable storage).
+        # Support syncing via gphoto2 by passing --frameo-dir "gphoto2:/store_.../DCIM".
+        if (cfg.frameo_dest_dir or "").strip().lower().startswith("gphoto2:"):
+            purge_images_in_gphoto2_folder(gphoto2_path=str(cfg.frameo_dest_dir))
+            ok = copy_image_to_frameo_gphoto2(
+                src_image=src_image,
+                gphoto2_path=str(cfg.frameo_dest_dir),
+                dest_filename=unique_name,
+            )
+            if ok:
+                logger.info("Copied image to Frameo via gphoto2: %s", cfg.frameo_dest_dir)
+            else:
+                logger.warning("Frameo gphoto2 sync failed. Verify gphoto2 detects the device and the folder path is correct.")
+            return
 
         dest_dir = resolve_frameo_destination_dir(
             explicit_dir=cfg.frameo_dest_dir,
@@ -95,7 +112,8 @@ def _sync_frameo_final_image(*, cfg: AppConfig, src_image: Path) -> None:
         else:
             logger.warning(
                 "Frameo sync enabled but destination not found. "
-                "On Linux/Raspberry Pi, mount the frame storage and set --frameo-dir to a real path like '/media/pi/FRAMEO/DCIM'."
+                "On Linux/Raspberry Pi, many frames are PTP (not mountable). "
+                "Use --frameo-dir 'gphoto2:auto' (recommended) or an explicit folder like 'gphoto2:/store_00010001/DCIM'."
             )
     except Exception:
         logger.exception("Failed to copy image to Frameo")
@@ -352,7 +370,17 @@ def generate_from_request(cfg: AppConfig, *, request_text: str, frameo_async: bo
                         logger.info("Sent loading screen to Frameo")
                     else:
                         shell_path = (cfg.frameo_dest_dir or "").strip()
-                        if shell_path.lower().startswith("this pc\\"):
+                        if shell_path.lower().startswith("gphoto2:"):
+                            purge_images_in_gphoto2_folder(gphoto2_path=shell_path)
+                            ok = copy_image_to_frameo_gphoto2(
+                                src_image=rendered,
+                                gphoto2_path=shell_path,
+                                dest_filename=loading_name,
+                                timeout_seconds=60.0,
+                            )
+                            if ok:
+                                logger.info("Sent loading screen to Frameo (gphoto2)")
+                        elif shell_path.lower().startswith("this pc\\"):
                             purge_images_in_shell_path(shell_path=shell_path)
                             # MTP folders can take a moment to refresh after deletes.
                             import time

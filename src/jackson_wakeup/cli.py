@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 from pathlib import Path
 
 from .config import AppConfig
@@ -80,11 +81,13 @@ def main() -> None:
     parser.add_argument(
         "--frameo-dir",
         type=str,
-        default=None,
+        default=os.environ.get("FRAMEO_DIR"),
         help=(
             "Destination folder for Frameo sync. Prefer a filesystem path like 'E:\\DCIM'. "
             "You may also pass a Windows Shell path like 'This PC\\Frame\\Internal storage\\DCIM' "
-            "(requires pywin32)."
+            "(requires pywin32). "
+            "On Raspberry Pi/Linux PTP devices, you can use gphoto2 paths like 'gphoto2:/store_.../DCIM' "
+            "or 'gphoto2:auto'. If unset, this defaults from the FRAMEO_DIR environment variable."
         ),
     )
     parser.add_argument(

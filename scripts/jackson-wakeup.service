@@ -8,7 +8,12 @@ Type=simple
 User=pi
 WorkingDirectory=/home/pi/jackson
 EnvironmentFile=/etc/jackson-wakeup.env
-ExecStart=/home/pi/jackson/.venv/bin/python -m jackson_wakeup.cli --run-forever --frameo-dir ${FRAMEO_DIR}
+
+# Best-effort: if gphoto2 is installed, wait briefly for the frame to appear.
+# This avoids a boot race where the service starts before USB/PTP is ready.
+ExecStartPre=/bin/sh -c 'command -v gphoto2 >/dev/null 2>&1 || exit 0; for i in $(seq 1 30); do gphoto2 --auto-detect 2>/dev/null | grep -q "usb:" && exit 0; sleep 2; done; exit 0'
+
+ExecStart=/home/pi/jackson/.venv/bin/python -m jackson_wakeup.cli --run-forever
 Restart=on-failure
 RestartSec=5
 
