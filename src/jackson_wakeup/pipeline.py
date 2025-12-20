@@ -515,6 +515,23 @@ def run_forever(cfg: AppConfig) -> None:
     generation_lock = threading.Lock()
     stop_event = threading.Event()
 
+    # Let systemd stop the service cleanly (SIGTERM).
+    try:
+        import signal
+
+        def _handle_term(_signum: int, _frame) -> None:  # type: ignore[no-untyped-def]
+            raise KeyboardInterrupt
+
+        signal.signal(signal.SIGTERM, _handle_term)
+    except Exception:
+        pass
+
+    def _is_portaudio_error(exc: BaseException) -> bool:
+        t = type(exc)
+        if t.__name__ == "PortAudioError":
+            return True
+        return str(getattr(t, "__module__", "")).startswith("sounddevice")
+
     def daily_weather_loop() -> None:
         # Fire at 5:00am local time, once per day.
         while not stop_event.is_set():
@@ -538,23 +555,34 @@ def run_forever(cfg: AppConfig) -> None:
     t = threading.Thread(target=daily_weather_loop, name="daily-weather", daemon=True)
     t.start()
 
-    listener = WakeWordListener(
-        vosk_model_path=str(cfg.vosk_model_dir),
-        sample_rate=cfg.sample_rate,
-        wake_phrase=cfg.wake_phrase,
-        device=cfg.device,
-        max_request_seconds=cfg.max_request_seconds,
-        log_transcript=cfg.verbose,
-    )
-
     try:
+        listener = WakeWordListener(
+            vosk_model_path=str(cfg.vosk_model_dir),
+            sample_rate=cfg.sample_rate,
+            wake_phrase=cfg.wake_phrase,
+            device=cfg.device,
+            max_request_seconds=cfg.max_request_seconds,
+            log_transcript=cfg.verbose,
+        )
+
         while True:
-            logger.info("Listening for wake phrase: %r", cfg.wake_phrase)
-            wake = listener.listen_once()
-            request_text = wake.request_text
-            logger.info("Heard request: %s", request_text)
-            with generation_lock:
-                generate_from_request(cfg, request_text=request_text, frameo_async=True)
+            try:
+                logger.info("Listening for wake phrase: %r", cfg.wake_phrase)
+                wake = listener.listen_once()
+                request_text = wake.request_text
+                logger.info("Heard request: %s", request_text)
+                with generation_lock:
+                    generate_from_request(cfg, request_text=request_text, frameo_async=True)
+            except Exception as exc:
+                if _is_portaudio_error(exc):
+                    logger.warning(
+                        "Microphone/PortAudio unavailable (%s). Continuing in weather-only mode.",
+                        str(exc).strip() or type(exc).__name__,
+                    )
+                    # Keep the daily weather thread alive; just stop listening.
+                    while True:
+                        time.sleep(3600)
+                raise
     except KeyboardInterrupt:
         logger.info("Shutting down...")
     finally:
