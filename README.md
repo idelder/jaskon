@@ -169,6 +169,8 @@ Tailscale makes it easy to SSH into the Pi from anywhere without opening router 
 
 - `journalctl -u jackson-wakeup -f`
 
+If you see `Failed at step CHDIR ... Permission denied`, check the unit file and ensure it does not set `ProtectHome=true` while using `WorkingDirectory=/home/pi/...`.
+
 ### Directory expectations
 
 At runtime the project expects these directories (created automatically where possible):

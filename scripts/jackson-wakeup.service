@@ -21,7 +21,9 @@ RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
-ProtectHome=true
+
+# NOTE: Do not set ProtectHome=true when WorkingDirectory is under /home.
+# This service needs to read/write within /home/pi/jackson (e.g., output/).
 
 [Install]
 WantedBy=multi-user.target
