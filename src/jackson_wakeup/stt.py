@@ -4,6 +4,7 @@ import logging
 import json
 import queue
 import re
+import threading
 import time
 from dataclasses import dataclass
 
@@ -167,7 +168,7 @@ class WakeWordListener:
         text = _normalize_text(text)
         return any(phrase in text for phrase in self._wake_variants)
 
-    def listen_once(self) -> WakeResult:
+    def listen_once(self, *, restart_event: threading.Event | None = None) -> WakeResult:
         """Blocks until it hears the wake phrase, then returns the subsequent request text."""
 
         audio_queue: queue.Queue[bytes] = queue.Queue()
@@ -175,13 +176,28 @@ class WakeWordListener:
         # If the USB mic is unplugged, PortAudio/ALSA sometimes stops delivering audio
         # without raising promptly. We treat a prolonged lack of audio as a disconnect.
         last_audio_time = time.time()
+        # Separate from "no frames": sometimes PortAudio keeps calling back but the
+        # selected input device yields constant zeros (wrong device / muted capture).
+        # We treat prolonged all-zero audio as a broken mic path.
+        last_nonzero_audio_time = time.time()
         stall_timeout_s = 5.0
+        zero_audio_timeout_s = 12.0
 
         def callback(indata: np.ndarray, frames: int, time_info, status) -> None:
             if status:
                 logger.debug("Audio input status: %s", status)
             nonlocal last_audio_time
+            nonlocal last_nonzero_audio_time
             last_audio_time = time.time()
+
+            # Update "nonzero" timestamp if we see any non-zero sample.
+            # Cast to int32 to avoid int16 overflow edge cases.
+            try:
+                max_abs = int(np.max(np.abs(indata.astype(np.int32))))
+            except Exception:
+                max_abs = 0
+            if max_abs > 0:
+                last_nonzero_audio_time = last_audio_time
             audio_queue.put(indata.tobytes())
 
         waiting_for_wake = True
@@ -204,15 +220,30 @@ class WakeWordListener:
             blocksize=8000,
         ):
             while True:
+                if restart_event is not None and restart_event.is_set():
+                    raise sd.PortAudioError("Audio device change detected; restarting mic stream")
                 try:
                     data = audio_queue.get(timeout=1.0)
                 except queue.Empty:
+                    if restart_event is not None and restart_event.is_set():
+                        raise sd.PortAudioError("Audio device change detected; restarting mic stream")
                     # No audio frames delivered recently -> likely device unplug or ALSA stall.
                     if time.time() - last_audio_time > stall_timeout_s:
                         raise sd.PortAudioError(
                             f"Audio input stalled for {stall_timeout_s:.0f}s (mic disconnected?)"
                         )
+                    # Stream is alive but delivering only zeros -> likely wrong capture device.
+                    if time.time() - last_nonzero_audio_time > zero_audio_timeout_s:
+                        raise sd.PortAudioError(
+                            f"Audio input has been all-zero for {zero_audio_timeout_s:.0f}s (wrong device / muted mic?)"
+                        )
                     continue
+
+                # Also check the all-zero watchdog when frames are arriving.
+                if time.time() - last_nonzero_audio_time > zero_audio_timeout_s:
+                    raise sd.PortAudioError(
+                        f"Audio input has been all-zero for {zero_audio_timeout_s:.0f}s (wrong device / muted mic?)"
+                    )
                 if self._rec.AcceptWaveform(data):
                     res = json.loads(self._rec.Result())
                     text = _normalize_text(res.get("text", ""))

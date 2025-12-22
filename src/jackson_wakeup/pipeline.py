@@ -514,6 +514,7 @@ def run_forever(cfg: AppConfig) -> None:
 
     generation_lock = threading.Lock()
     stop_event = threading.Event()
+    audio_restart_event = threading.Event()
 
     # Let systemd stop the service cleanly (SIGTERM).
     try:
@@ -553,6 +554,45 @@ def run_forever(cfg: AppConfig) -> None:
                 logger.info("Detected input devices: (none)")
         except Exception:
             logger.debug("Failed to log sounddevice diagnostics", exc_info=True)
+
+    def _device_signature() -> tuple[str, ...]:
+        """Best-effort fingerprint of currently visible input devices."""
+
+        try:
+            import sounddevice as sd
+
+            sig: list[str] = []
+            for idx, info in enumerate(sd.query_devices()):
+                try:
+                    if int(info.get("max_input_channels", 0) or 0) <= 0:
+                        continue
+                    name = str(info.get("name", ""))
+                    hostapi = str(info.get("hostapi", ""))
+                    # Keep it stable-ish but not too verbose.
+                    sig.append(f"{idx}:{hostapi}:{name}")
+                except Exception:
+                    continue
+            return tuple(sig)
+        except Exception:
+            return tuple()
+
+    def audio_device_watchdog() -> None:
+        """Watches for audio device list changes and forces stream restart.
+
+        This helps with USB mic unplug/replug cases where PortAudio keeps a
+        stale device selection and the stream never errors.
+        """
+
+        last_sig = _device_signature()
+        while not stop_event.is_set():
+            time.sleep(5.0)
+            sig = _device_signature()
+            if sig != last_sig:
+                last_sig = sig
+                logger.info("Audio device change detected; restarting mic stream")
+                audio_restart_event.set()
+
+    threading.Thread(target=audio_device_watchdog, name="audio-device-watch", daemon=True).start()
 
 
     def daily_weather_loop() -> None:
@@ -608,11 +648,12 @@ def run_forever(cfg: AppConfig) -> None:
             max_request_seconds=cfg.max_request_seconds,
             log_transcript=cfg.verbose,
         )
+        audio_restart_event.clear()
 
         while True:
             try:
                 logger.info("Listening for wake phrase: %r", cfg.wake_phrase)
-                wake = listener.listen_once()
+                wake = listener.listen_once(restart_event=audio_restart_event)
                 request_text = wake.request_text
                 logger.info("Heard request: %s", request_text)
                 with generation_lock:
@@ -624,6 +665,7 @@ def run_forever(cfg: AppConfig) -> None:
                         str(exc).strip() or type(exc).__name__,
                     )
                     _log_audio_diagnostics()
+                    audio_restart_event.clear()
                     # Keep the daily weather thread alive; periodically retry the mic.
                     retry_s = 30.0
                     while not stop_event.is_set():
@@ -642,6 +684,7 @@ def run_forever(cfg: AppConfig) -> None:
                                 max_request_seconds=cfg.max_request_seconds,
                                 log_transcript=cfg.verbose,
                             )
+                            audio_restart_event.clear()
                             logger.info(
                                 "Microphone available; resuming wake listening (device=%s, sample_rate=%s)",
                                 str(dev) if dev is not None else "default",
