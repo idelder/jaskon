@@ -15,6 +15,57 @@ from vosk import KaldiRecognizer, Model
 logger = logging.getLogger(__name__)
 
 
+def probe_input_device(*, device: int | None, sample_rate: int) -> tuple[bool, int | None]:
+    """Return (ok, device_to_use) for an input stream.
+
+    - If `device` is provided, we only test that device.
+    - If `device` is None, we try the default input device and, if that fails,
+      we scan for the first input-capable device that can actually be opened.
+
+    This is used by the systemd run-forever loop to decide whether wake listening
+    can resume after a USB mic reconnect.
+    """
+
+    def _try_open(dev: int | None) -> bool:
+        try:
+            with sd.InputStream(
+                samplerate=sample_rate,
+                channels=1,
+                dtype="int16",
+                callback=lambda *_a, **_k: None,
+                device=dev,
+                blocksize=8000,
+            ):
+                time.sleep(0.05)
+            return True
+        except Exception:
+            return False
+
+    if device is not None:
+        return (_try_open(device), device)
+
+    # First try the default input device.
+    if _try_open(None):
+        return (True, None)
+
+    # If default is invalid (often shows up as device -1), search for a working input.
+    try:
+        devices = sd.query_devices()
+    except Exception:
+        return (False, None)
+
+    for idx, info in enumerate(devices):
+        try:
+            if int(info.get("max_input_channels", 0) or 0) <= 0:
+                continue
+        except Exception:
+            continue
+        if _try_open(idx):
+            return (True, idx)
+
+    return (False, None)
+
+
 def _normalize_text(text: str) -> str:
     text = text.lower().strip()
     text = re.sub(r"[^a-z0-9\s]+", " ", text)

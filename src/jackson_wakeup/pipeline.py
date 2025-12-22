@@ -13,7 +13,7 @@ import shutil
 
 from .config import AppConfig
 from .openai_client import build_image_prompt, generate_image, generate_search_query
-from .stt import WakeWordListener
+from .stt import WakeWordListener, probe_input_device
 from .vosk_setup import ensure_vosk_model
 from .web_search import web_search
 from uuid import uuid4
@@ -532,15 +532,6 @@ def run_forever(cfg: AppConfig) -> None:
             return True
         return str(getattr(t, "__module__", "")).startswith("sounddevice")
 
-    def _make_listener() -> WakeWordListener:
-        return WakeWordListener(
-            vosk_model_path=str(cfg.vosk_model_dir),
-            sample_rate=cfg.sample_rate,
-            wake_phrase=cfg.wake_phrase,
-            device=cfg.device,
-            max_request_seconds=cfg.max_request_seconds,
-            log_transcript=cfg.verbose,
-        )
 
     def daily_weather_loop() -> None:
         # Fire at 5:00am local time, once per day.
@@ -566,7 +557,14 @@ def run_forever(cfg: AppConfig) -> None:
     t.start()
 
     try:
-        listener = _make_listener()
+        listener = WakeWordListener(
+            vosk_model_path=str(cfg.vosk_model_dir),
+            sample_rate=cfg.sample_rate,
+            wake_phrase=cfg.wake_phrase,
+            device=cfg.device,
+            max_request_seconds=cfg.max_request_seconds,
+            log_transcript=cfg.verbose,
+        )
 
         while True:
             try:
@@ -587,8 +585,17 @@ def run_forever(cfg: AppConfig) -> None:
                     while not stop_event.is_set():
                         time.sleep(retry_s)
                         try:
-                            listener = _make_listener()
-                            logger.info("Microphone appears available again; resuming wake listening")
+                            ok, dev = probe_input_device(device=cfg.device, sample_rate=cfg.sample_rate)
+                            if not ok:
+                                logger.info("Mic still unavailable; will retry in %.0fs", retry_s)
+                                continue
+
+                            # Use the discovered working device (or None to use default).
+                            listener.device = dev
+                            logger.info(
+                                "Microphone available; resuming wake listening (device=%s)",
+                                str(dev) if dev is not None else "default",
+                            )
                             break
                         except Exception as retry_exc:
                             if _is_portaudio_error(retry_exc):

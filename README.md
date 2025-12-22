@@ -171,7 +171,7 @@ Tailscale makes it easy to SSH into the Pi from anywhere without opening router 
 
 If you see `Failed at step CHDIR ... Permission denied`, check the unit file and ensure it does not set `ProtectHome=true` while using `WorkingDirectory=/home/pi/...`.
 
-If you see a `sounddevice.PortAudioError` at boot (no mic / audio device not ready), the service will automatically fall back to **weather-only mode** (it will keep running and only do the 5am forecast).
+If you see a `sounddevice.PortAudioError` at boot (no mic / audio device not ready), the service will automatically fall back to **weather-only mode** (it will keep running and only do the 5am forecast). It will retry the mic periodically and resume wake listening automatically once the input device is available.
 
 ### Directory expectations
 
