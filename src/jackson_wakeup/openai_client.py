@@ -373,7 +373,7 @@ def build_image_prompt(
                 "role": "user",
                 "content": [
                     {"type": "input_text", "text": user_text},
-                    #{"type": "input_image", "image_url": ref_data_url},
+                    {"type": "input_image", "image_url": ref_data_url},
                 ],
             },
         ],
