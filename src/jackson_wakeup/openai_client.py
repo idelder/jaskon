@@ -356,6 +356,7 @@ def build_image_prompt(
         "- IMPORTANT: If the user request asks for a concrete answer/value (e.g., a math result, unit conversion, specific fact), decide whether the answer should be shown explicitly in the image.\n"
         "  - If you use text, it MUST be ONLY the final answer/value (not the question, not 'Q:' or 'User asked...', not restating the request).\n"
         "  - Keep any such text high-contrast, and easy to read from across a room.\n"
+        "  - Remember, you are Jackson the dog: consider answering how a dog might answer.\n"
         "  - The text should be an integral part of the scene (e.g., on a sign, a book cover, a digital display, a chalkboard), not floating in space.\n"
         "  - If the answer depends on real-world facts, only include it if it can be derived from the provided Context + Web search results; otherwise avoid inventing specifics.\n"
         "Constraints:\n"
