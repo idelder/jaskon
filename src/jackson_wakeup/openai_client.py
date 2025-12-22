@@ -220,6 +220,22 @@ def _find_reference_images(assets_dir: Path) -> list[Path]:
     return sorted(images)
 
 
+def _resolve_jackson_reference_image(assets_dir: Path) -> Path | None:
+    """Return the single intended Jackson reference photo.
+
+    By convention this project uses assets/jackson.jpg. We intentionally ignore
+    assets/loading.png and any other images so the reference photo stays stable.
+    """
+
+    try:
+        p = assets_dir / "jackson.jpg"
+        if p.exists() and p.is_file():
+            return p
+    except Exception:
+        pass
+    return None
+
+
 def _encode_image_data_url(image_path: Path) -> str:
     mime = {
         ".jpg": "image/jpeg",
@@ -287,9 +303,8 @@ def build_image_prompt(
     # This helps keep markings/style consistent even before the final image edit call.
     ref_data_url: str | None = None
     try:
-        ref_images = _find_reference_images(assets_dir)
-        if ref_images:
-            ref_image = ref_images[0]
+        ref_image = _resolve_jackson_reference_image(assets_dir)
+        if ref_image is not None:
             ref_data_url = _encode_image_data_url(ref_image)
             logger.info("Attaching Jackson reference image to prompt-writer: %s", ref_image)
     except Exception:
@@ -472,10 +487,9 @@ def generate_image(
         )
         size = "auto"
 
-    # If we weren't explicitly given a reference image, try to use the first image in assets_dir.
+    # If we weren't explicitly given a reference image, use assets/jackson.jpg (only).
     if reference_image_path is None and assets_dir is not None:
-        refs = _find_reference_images(assets_dir)
-        reference_image_path = refs[0] if refs else None
+        reference_image_path = _resolve_jackson_reference_image(assets_dir)
 
     # Prefer attaching the reference image to the image call (so the image model can see Jackson).
     # Feature-detect edit capability because not all models/endpoints support it.

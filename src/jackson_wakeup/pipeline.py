@@ -296,10 +296,10 @@ def _render_loading_with_request(*, loading_path: Path, request_text: str, out_p
 
         text = "\n".join(lines)
 
-        # User request: white text only with no background.
+        # User request: black text only with no background.
         spacing = int(font_size * 0.25)
         x, y = margin, margin * 2
-        draw.multiline_text((x, y), text, font=font, fill=(255, 255, 255, 255), spacing=spacing)
+        draw.multiline_text((x, y), text, font=font, fill=(0, 0, 0, 255), spacing=spacing)
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
         im.convert("RGB").save(out_path, format="PNG", optimize=True)
