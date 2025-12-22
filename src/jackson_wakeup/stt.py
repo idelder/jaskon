@@ -15,6 +15,25 @@ from vosk import KaldiRecognizer, Model
 logger = logging.getLogger(__name__)
 
 
+def _reset_portaudio() -> None:
+    """Best-effort reset of PortAudio via sounddevice.
+
+    On some Linux/ALSA setups, unplugging/replugging a USB mic can leave PortAudio
+    with a stale device list until it is re-initialized.
+    """
+
+    try:
+        # These are internal APIs, but are widely used as a pragmatic recovery.
+        term = getattr(sd, "_terminate", None)
+        init = getattr(sd, "_initialize", None)
+        if callable(term):
+            term()
+        if callable(init):
+            init()
+    except Exception:
+        logger.debug("PortAudio reset attempt failed", exc_info=True)
+
+
 def probe_input_device(
     *,
     device: int | None,
@@ -55,34 +74,44 @@ def probe_input_device(
         except Exception:
             return False
 
-    if device is not None:
+    def _probe_once() -> tuple[bool, int | None, int | None]:
+        if device is not None:
+            for sr in rates:
+                if _try_open(device, sr):
+                    return (True, device, sr)
+            return (False, device, None)
+
+        # First try the default input device.
         for sr in rates:
-            if _try_open(device, sr):
-                return (True, device, sr)
-        return (False, device, None)
+            if _try_open(None, sr):
+                return (True, None, sr)
 
-    # First try the default input device.
-    for sr in rates:
-        if _try_open(None, sr):
-            return (True, None, sr)
+        # If default is invalid (often shows up as device -1), search for a working input.
+        try:
+            devices = sd.query_devices()
+        except Exception:
+            return (False, None, None)
 
-    # If default is invalid (often shows up as device -1), search for a working input.
-    try:
-        devices = sd.query_devices()
-    except Exception:
+        for idx, info in enumerate(devices):
+            try:
+                if int(info.get("max_input_channels", 0) or 0) <= 0:
+                    continue
+            except Exception:
+                continue
+            for sr in rates:
+                if _try_open(idx, sr):
+                    return (True, idx, sr)
+
         return (False, None, None)
 
-    for idx, info in enumerate(devices):
-        try:
-            if int(info.get("max_input_channels", 0) or 0) <= 0:
-                continue
-        except Exception:
-            continue
-        for sr in rates:
-            if _try_open(idx, sr):
-                return (True, idx, sr)
+    ok, dev, sr = _probe_once()
+    if ok:
+        return (ok, dev, sr)
 
-    return (False, None, None)
+    # If we didn't find anything, try a PortAudio reset (helps after USB replug), then probe again.
+    _reset_portaudio()
+    ok2, dev2, sr2 = _probe_once()
+    return (ok2, dev2, sr2)
 
 
 def _normalize_text(text: str) -> str:
@@ -143,9 +172,16 @@ class WakeWordListener:
 
         audio_queue: queue.Queue[bytes] = queue.Queue()
 
+        # If the USB mic is unplugged, PortAudio/ALSA sometimes stops delivering audio
+        # without raising promptly. We treat a prolonged lack of audio as a disconnect.
+        last_audio_time = time.time()
+        stall_timeout_s = 5.0
+
         def callback(indata: np.ndarray, frames: int, time_info, status) -> None:
             if status:
                 logger.debug("Audio input status: %s", status)
+            nonlocal last_audio_time
+            last_audio_time = time.time()
             audio_queue.put(indata.tobytes())
 
         waiting_for_wake = True
@@ -168,7 +204,15 @@ class WakeWordListener:
             blocksize=8000,
         ):
             while True:
-                data = audio_queue.get()
+                try:
+                    data = audio_queue.get(timeout=1.0)
+                except queue.Empty:
+                    # No audio frames delivered recently -> likely device unplug or ALSA stall.
+                    if time.time() - last_audio_time > stall_timeout_s:
+                        raise sd.PortAudioError(
+                            f"Audio input stalled for {stall_timeout_s:.0f}s (mic disconnected?)"
+                        )
+                    continue
                 if self._rec.AcceptWaveform(data):
                     res = json.loads(self._rec.Result())
                     text = _normalize_text(res.get("text", ""))

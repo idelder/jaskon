@@ -532,6 +532,28 @@ def run_forever(cfg: AppConfig) -> None:
             return True
         return str(getattr(t, "__module__", "")).startswith("sounddevice")
 
+    def _log_audio_diagnostics() -> None:
+        try:
+            import sounddevice as sd
+
+            logger.info("sounddevice default device: %s", getattr(sd, "default", None).device)
+            devices = sd.query_devices()
+            inputs = []
+            for idx, info in enumerate(devices):
+                try:
+                    if int(info.get("max_input_channels", 0) or 0) <= 0:
+                        continue
+                    name = str(info.get("name", ""))
+                    inputs.append(f"{idx}:{name}")
+                except Exception:
+                    continue
+            if inputs:
+                logger.info("Detected input devices: %s", ", ".join(inputs[:12]))
+            else:
+                logger.info("Detected input devices: (none)")
+        except Exception:
+            logger.debug("Failed to log sounddevice diagnostics", exc_info=True)
+
 
     def daily_weather_loop() -> None:
         # Fire at 5:00am local time, once per day.
@@ -562,6 +584,7 @@ def run_forever(cfg: AppConfig) -> None:
             logger.warning(
                 "Microphone/PortAudio unavailable at startup. Continuing in weather-only mode."
             )
+            _log_audio_diagnostics()
             # Keep the daily weather thread alive; periodically retry the mic.
             retry_s = 30.0
             while not stop_event.is_set():
@@ -600,6 +623,7 @@ def run_forever(cfg: AppConfig) -> None:
                         "Microphone/PortAudio unavailable (%s). Continuing in weather-only mode.",
                         str(exc).strip() or type(exc).__name__,
                     )
+                    _log_audio_diagnostics()
                     # Keep the daily weather thread alive; periodically retry the mic.
                     retry_s = 30.0
                     while not stop_event.is_set():
