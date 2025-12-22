@@ -557,11 +557,31 @@ def run_forever(cfg: AppConfig) -> None:
     t.start()
 
     try:
+        ok, dev, sr = probe_input_device(device=cfg.device, preferred_sample_rate=cfg.sample_rate)
+        if not ok or sr is None:
+            logger.warning(
+                "Microphone/PortAudio unavailable at startup. Continuing in weather-only mode."
+            )
+            # Keep the daily weather thread alive; periodically retry the mic.
+            retry_s = 30.0
+            while not stop_event.is_set():
+                time.sleep(retry_s)
+                ok, dev, sr = probe_input_device(device=cfg.device, preferred_sample_rate=cfg.sample_rate)
+                if ok and sr is not None:
+                    logger.info(
+                        "Microphone available; starting wake listening (device=%s, sample_rate=%s)",
+                        str(dev) if dev is not None else "default",
+                        sr,
+                    )
+                    break
+            if stop_event.is_set() or not ok or sr is None:
+                raise KeyboardInterrupt
+
         listener = WakeWordListener(
             vosk_model_path=str(cfg.vosk_model_dir),
-            sample_rate=cfg.sample_rate,
+            sample_rate=int(sr),
             wake_phrase=cfg.wake_phrase,
-            device=cfg.device,
+            device=dev,
             max_request_seconds=cfg.max_request_seconds,
             log_transcript=cfg.verbose,
         )
@@ -585,16 +605,23 @@ def run_forever(cfg: AppConfig) -> None:
                     while not stop_event.is_set():
                         time.sleep(retry_s)
                         try:
-                            ok, dev = probe_input_device(device=cfg.device, sample_rate=cfg.sample_rate)
-                            if not ok:
+                            ok, dev, sr = probe_input_device(device=cfg.device, preferred_sample_rate=cfg.sample_rate)
+                            if not ok or sr is None:
                                 logger.info("Mic still unavailable; will retry in %.0fs", retry_s)
                                 continue
 
-                            # Use the discovered working device (or None to use default).
-                            listener.device = dev
+                            listener = WakeWordListener(
+                                vosk_model_path=str(cfg.vosk_model_dir),
+                                sample_rate=int(sr),
+                                wake_phrase=cfg.wake_phrase,
+                                device=dev,
+                                max_request_seconds=cfg.max_request_seconds,
+                                log_transcript=cfg.verbose,
+                            )
                             logger.info(
-                                "Microphone available; resuming wake listening (device=%s)",
+                                "Microphone available; resuming wake listening (device=%s, sample_rate=%s)",
                                 str(dev) if dev is not None else "default",
+                                sr,
                             )
                             break
                         except Exception as retry_exc:

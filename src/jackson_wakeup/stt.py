@@ -15,21 +15,35 @@ from vosk import KaldiRecognizer, Model
 logger = logging.getLogger(__name__)
 
 
-def probe_input_device(*, device: int | None, sample_rate: int) -> tuple[bool, int | None]:
-    """Return (ok, device_to_use) for an input stream.
+def probe_input_device(
+    *,
+    device: int | None,
+    preferred_sample_rate: int,
+    candidate_sample_rates: list[int] | None = None,
+) -> tuple[bool, int | None, int | None]:
+    """Return (ok, device_to_use, sample_rate_to_use) for an input stream.
 
-    - If `device` is provided, we only test that device.
-    - If `device` is None, we try the default input device and, if that fails,
-      we scan for the first input-capable device that can actually be opened.
-
-    This is used by the systemd run-forever loop to decide whether wake listening
-    can resume after a USB mic reconnect.
+    Common failure mode on Raspberry Pi USB mics: 16kHz is rejected with
+    `Invalid sample rate [PaErrorCode -9997]`. In that case we try alternate
+    rates (typically 48000 or 44100) and return the first one that can be opened.
     """
 
-    def _try_open(dev: int | None) -> bool:
+    # Build sample-rate candidates with a sensible ordering.
+    rates: list[int] = []
+    if preferred_sample_rate:
+        rates.append(int(preferred_sample_rate))
+    if candidate_sample_rates:
+        rates.extend(int(r) for r in candidate_sample_rates if r)
+    # Common microphone capture rates.
+    rates.extend([48000, 44100, 16000])
+    # Deduplicate while preserving order.
+    seen: set[int] = set()
+    rates = [r for r in rates if not (r in seen or seen.add(r))]
+
+    def _try_open(dev: int | None, sr: int) -> bool:
         try:
             with sd.InputStream(
-                samplerate=sample_rate,
+                samplerate=sr,
                 channels=1,
                 dtype="int16",
                 callback=lambda *_a, **_k: None,
@@ -42,17 +56,21 @@ def probe_input_device(*, device: int | None, sample_rate: int) -> tuple[bool, i
             return False
 
     if device is not None:
-        return (_try_open(device), device)
+        for sr in rates:
+            if _try_open(device, sr):
+                return (True, device, sr)
+        return (False, device, None)
 
     # First try the default input device.
-    if _try_open(None):
-        return (True, None)
+    for sr in rates:
+        if _try_open(None, sr):
+            return (True, None, sr)
 
     # If default is invalid (often shows up as device -1), search for a working input.
     try:
         devices = sd.query_devices()
     except Exception:
-        return (False, None)
+        return (False, None, None)
 
     for idx, info in enumerate(devices):
         try:
@@ -60,10 +78,11 @@ def probe_input_device(*, device: int | None, sample_rate: int) -> tuple[bool, i
                 continue
         except Exception:
             continue
-        if _try_open(idx):
-            return (True, idx)
+        for sr in rates:
+            if _try_open(idx, sr):
+                return (True, idx, sr)
 
-    return (False, None)
+    return (False, None, None)
 
 
 def _normalize_text(text: str) -> str:
