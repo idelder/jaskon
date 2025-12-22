@@ -304,7 +304,7 @@ def build_image_prompt(
         "Respond to the user's request (which comes after the wake phrase). "
         "The setting of the image must reflect the user's request and be tailored to any relevant context. I.e., "
         "consider whether information is best conveyed with Jackson in an indoor or outdoor setting, "
-        "performing a specific activity, in a particular place. Consider time of day, weather, and other environmental details. " \
+        "performing a specific activity, in a particular place. Consider time of day, weather, seasonal holidays, and other environmental details. " \
         "Provide all necessary details to the image model to get a rich, engaging scene and capture necessary information. "
         "If a reference photo is attached, use it to keep Jackson's markings consistent. "
     )
@@ -361,6 +361,7 @@ def build_image_prompt(
         "Constraints:\n"
         "  - DO NOT repeat, quote, or closely paraphrase the user's request text in the image prompt.\n"
         "  - Match the theme and setting to the response/solution/scene that satisfies the request.\n"
+        "  - If the scene includes text you MUST specify the text exactly as it should appear.\n"
         "- Composition: center-weighted, clean silhouette, readable from across a room.\n"
         "- Avoid watermarks, logos, UI elements, or borders.\n"
         "- Lighting: warm, photo-frame-friendly, no harsh contrast.\n\n"
