@@ -40,6 +40,44 @@ logger = logging.getLogger(__name__)
 _FRAMEO_BG_LOCK = threading.Lock()
 
 
+def _purge_frameo_now(*, cfg: AppConfig) -> None:
+    """Purge Frameo images immediately (best-effort).
+
+    Intended as a visible acknowledgement when the wake phrase is heard.
+    """
+
+    if not cfg.frameo_enabled:
+        return
+    dest = (cfg.frameo_dest_dir or "").strip()
+    if not dest:
+        return
+
+    try:
+        # Serialize Frameo operations to avoid purge/copy races.
+        with _FRAMEO_BG_LOCK:
+            if dest.lower().startswith("gphoto2:"):
+                ok = purge_images_in_gphoto2_folder(gphoto2_path=dest)
+                if not ok:
+                    logger.warning(
+                        "Frameo gphoto2 purge failed. Verify gphoto2 detects the device and the folder path is correct."
+                    )
+                return
+
+            dest_dir = resolve_frameo_destination_dir(
+                explicit_dir=cfg.frameo_dest_dir,
+                device_label=cfg.frameo_device_label,
+            )
+            if dest_dir is not None:
+                purge_images_in_dir(dest_dir)
+                return
+
+            if dest.lower().startswith("this pc\\"):
+                purge_images_in_shell_path(shell_path=dest)
+                return
+    except Exception:
+        logger.exception("Failed to purge Frameo")
+
+
 def _sync_frameo_final_image(*, cfg: AppConfig, src_image: Path) -> None:
     """Purge + copy the final image to Frameo (best-effort)."""
 
@@ -653,7 +691,17 @@ def run_forever(cfg: AppConfig) -> None:
         while True:
             try:
                 logger.info("Listening for wake phrase: %r", cfg.wake_phrase)
-                wake = listener.listen_once(restart_event=audio_restart_event)
+
+                def _on_wake() -> None:
+                    # Purge asynchronously so we don't block the audio capture loop.
+                    threading.Thread(
+                        target=_purge_frameo_now,
+                        kwargs={"cfg": cfg},
+                        name="frameo-purge-on-wake",
+                        daemon=True,
+                    ).start()
+
+                wake = listener.listen_once(restart_event=audio_restart_event, on_wake=_on_wake)
                 request_text = wake.request_text
                 logger.info("Heard request: %s", request_text)
                 with generation_lock:

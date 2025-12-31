@@ -7,6 +7,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass
+from collections.abc import Callable
 
 import numpy as np
 import sounddevice as sd
@@ -168,7 +169,12 @@ class WakeWordListener:
         text = _normalize_text(text)
         return any(phrase in text for phrase in self._wake_variants)
 
-    def listen_once(self, *, restart_event: threading.Event | None = None) -> WakeResult:
+    def listen_once(
+        self,
+        *,
+        restart_event: threading.Event | None = None,
+        on_wake: Callable[[], None] | None = None,
+    ) -> WakeResult:
         """Blocks until it hears the wake phrase, then returns the subsequent request text."""
 
         audio_queue: queue.Queue[bytes] = queue.Queue()
@@ -203,6 +209,7 @@ class WakeWordListener:
         waiting_for_wake = True
         waiting_for_request = False
         request_deadline = 0.0
+        wake_fired = False
 
         logger.debug(
             "Starting mic stream (sr=%s, device=%s). Wake phrase=%r",
@@ -270,6 +277,15 @@ class WakeWordListener:
 
                         if idx >= 0 and matched_phrase is not None:
                             logger.debug("Wake phrase detected (%r) in: %r", matched_phrase, text)
+
+                            if not wake_fired:
+                                wake_fired = True
+                                if on_wake is not None:
+                                    try:
+                                        on_wake()
+                                    except Exception:
+                                        logger.debug("on_wake callback failed", exc_info=True)
+
                             after = text[idx + len(matched_phrase) :].strip()
                             if after:
                                 return WakeResult(request_text=after)

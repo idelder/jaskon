@@ -61,12 +61,18 @@ def _have_gphoto2() -> bool:
     return shutil.which("gphoto2") is not None
 
 
-def _run_gphoto2(args: list[str], *, timeout_seconds: float) -> subprocess.CompletedProcess[str]:
+def _run_gphoto2(
+    args: list[str],
+    *,
+    timeout_seconds: float,
+    input_text: str | None = None,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         args,
         capture_output=True,
         text=True,
         timeout=timeout_seconds,
+        input=input_text,
     )
 
 
@@ -159,6 +165,7 @@ def purge_images_in_gphoto2_folder(*, gphoto2_path: str, timeout_seconds: float 
         p = _run_gphoto2(
             ["gphoto2", "--port", port, "--folder", remote, "--delete-all-files"],
             timeout_seconds=timeout_seconds,
+            input_text="y\n",
         )
         if p.returncode != 0:
             logger.warning("gphoto2 delete-all-files failed: %s", (p.stderr or p.stdout).strip())
